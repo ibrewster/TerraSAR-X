@@ -5,9 +5,11 @@ import re
 import shutil
 import tempfile
 import tarfile
+import zipfile
 
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 
 import mattermostdriver
 import pygmt
@@ -111,6 +113,11 @@ def upload_to_mattermost(filename, image, volcano, mattermost, channel_id):
 
 def file_message(service, message_id):
     print(f"Filing message with id: {message_id}")
+    modify_body = {
+        "addLabelIds": ['Label_3229944419067452259'],
+        "removeLabelIds": ['UNREAD', 'INBOX'],
+    }
+    service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute()
 
 
 def get_messages():
@@ -163,7 +170,11 @@ def download_package(url):
     filedata = BytesIO()
     ftps_server = ftplib.FTP_TLS(server, user, config.FTP_PASSWORD)
     ftps_server.prot_p()
-    ftps_server.retrbinary(f"RETR {filename}", filedata.write)
+    try:
+        ftps_server.retrbinary(f"RETR {filename}", filedata.write)
+    except ftplib.error_perm:
+        print("Unable to access file")
+        raise FileNotFoundError("Unable to access file")
 
     print("Downloaded file", filename)
 
@@ -180,7 +191,11 @@ def extract_files(file):
         files = tf.getnames()
         tf.extractall(td)
 
-        img_file = next((x for x in files if img_pattern.search(x)))
+        try:
+            img_file = next((x for x in files if img_pattern.search(x)))
+        except StopIteration:
+            print("Image file not found in archive")
+            raise FileNotFoundError("No Image file found")
         xml_file = next((x for x in files if xml_pattern.search(x)))
 
         img_path = os.path.join(td, img_file)
@@ -200,6 +215,7 @@ def extract_files(file):
 
 def create_png(file_dir):
     print("Processing image")
+    gdal.AllRegister()
     img_file = os.path.join(file_dir, "sar_image.tif")
     out_file = os.path.join(file_dir, "sar_image.png")
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
@@ -227,7 +243,7 @@ def create_png(file_dir):
     gmt_region = [minLon, maxLon, minLat, maxLat]
 
     kwargs = {
-        "dstSRS": "EPSG:4326",
+        "dstSRS": "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180",
         "multithread": True,
         "warpOptions": ["NUM_THREADS=ALL_CPUS"],
         "creationOptions": ["NUM_THREADS=ALL_CPUS"],
@@ -237,21 +253,22 @@ def create_png(file_dir):
 
     fig = pygmt.Figure()
 
-    pygmt.makecpt(cmap="gray", background="i", series=[0, 300])
-
     projection = f"U{utm_zone}/7.65i"
     with pygmt.config(
         FONT_LABEL="12p,white",
         FONT_ANNOT_PRIMARY="12p,white",
         MAP_TICK_PEN_PRIMARY="1p,white",
     ):
+        pygmt.makecpt(cmap="gray", series=[0, 300])
 
-        fig.grdimage(warped_file, projection=projection, region=gmt_region, dpi=300)
+        fig.grdimage(
+            warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
+        )
 
-        fig.basemap(map_scale="jLB+w1+o0.612i")
-        fig.savefig(out_file)
+        # fig.basemap(map_scale="jLB+w1+o0.612i")
+        fig.savefig(out_file, transparent=True)
 
-    return out_file
+    return out_file, gmt_region
 
 
 def add_annotations(png_file, volcano, timestamp):
@@ -315,6 +332,34 @@ def sharepoint_upload(file, volcano):
     resp = server.get(request_url)
     print(resp.status_code)
 
+def gen_kmz(file, img_name, img_date, bounds):
+    file = Path(file)
+    kml_template = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
+<GroundOverlay>
+    <name>{file}</name>
+    <Icon>
+        <href>{file}</href>
+    </Icon>
+    <LatLonBox>
+        <north>{north}</north>
+        <east>{east}</east>
+        <south>{south}</south>
+        <west>{west}</west>
+    </LatLonBox>
+</GroundOverlay>
+</kml>"""
+    kmz_file = datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%dT%H%M%S.kmz')
+    kmz_name = file.parent / kmz_file
+    west, east, south, north = bounds
+    kml = kml_template.format(file=img_name, west=west, east=east, south=south, north=north)
+    kml = kml.encode('UTF-8')
+    with zipfile.ZipFile(kmz_name, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
+        zipf.write(str(file), img_name)
+        zipf.writestr("doc.kml", kml)
+
+    return kmz_name
+
 
 if __name__ == "__main__":
     # from requests_html import HTMLSession
@@ -328,15 +373,28 @@ if __name__ == "__main__":
     # add_annotations('testFiles/sar_image.png', 'Cleveland', '2023-03-16 12:56')
 
     packages = get_messages()
+    top_dir = Path(config.KML_DIR)
     mattermost, channel_id = connect_to_mattermost()
 
     for url, volc in packages:
         # url = 'ftps://PlankS_GEO3593_5@download.dsda.dlr.de//dims_op_oc_dfd2_693027697_1.tar.gz'
         # volc = 'Shishaldin'
-        tar_gz_file = download_package(url)
-        file_dir, img_name, img_date = extract_files(tar_gz_file)
-        png_file = create_png(file_dir.name)
+        try:
+            tar_gz_file = download_package(url)
+            file_dir, img_name, img_date = extract_files(tar_gz_file)
+        except FileNotFoundError:
+            continue
+
+        png_file, png_region = create_png(file_dir.name)
+        kmz_file = gen_kmz(png_file, img_name, img_date, png_region)
+        kml_dir = (
+            top_dir / volc / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%dT%H%M%S')
+        )
+        os.makedirs(kml_dir, exist_ok=True)
+
+        shutil.move(kmz_file, kml_dir)
         add_annotations(png_file, volc, img_date)
+
         # upload_to_mattermost(img_name.replace('.tif', ''), png_file, volc, mattermost, channel_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
