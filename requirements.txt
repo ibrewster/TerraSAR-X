@@ -1,0 +1,8 @@
+google-api-python-client
+google-auth-oauthlib
+mattermostdriver
+pygmt
+numpy
+gdal
+pillow
+matplotlib

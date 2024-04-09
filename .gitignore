@@ -1,0 +1,6 @@
+token.pickle
+env
+credentials.json
+*.wpr
+*.wpu
+__pycache__
