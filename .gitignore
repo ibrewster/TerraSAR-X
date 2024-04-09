@@ -1,3 +1,7 @@
+tsx
+testFiles
+config.py
+.DS_Store
 token.pickle
 env
 credentials.json
