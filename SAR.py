@@ -13,7 +13,6 @@ from pathlib import Path
 
 import mattermostdriver
 import pygmt
-import requests
 
 # import sharepy
 
@@ -120,13 +119,13 @@ def file_message(service, message_id):
     service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute()
 
 
-def get_messages():
+def get_messages(srvice):
     print("Retrieving messages")
-    service = gmail_authenticate()
     messages = search_messages(service, "from:Simon.Plank@dlr.de")
 
     url_pattern = re.compile("\n\s+(ftps:\/\/.+.tar.gz)")
     packages = []
+    ids = []
     print(f"{len(messages)} messages found")
     for message in messages:
         message_id = message["id"]
@@ -155,9 +154,10 @@ def get_messages():
         package_name = name_match.group(1)
         volc = package_name.split("_")[0]
         packages.append((download_url, volc))
-        file_message(service, message_id)
+        ids.append(message_id)
+        # file_message(service, message_id)
 
-    return packages
+    return (packages, ids)
 
 
 def download_package(url):
@@ -216,8 +216,10 @@ def extract_files(file):
 def create_png(file_dir):
     print("Processing image")
     gdal.AllRegister()
+    gdal.DontUseExceptions()
     img_file = os.path.join(file_dir, "sar_image.tif")
-    out_file = os.path.join(file_dir, "sar_image.png")
+    out_file = os.path.join(file_dir, "sar_image_annotated.png")
+    clean_file = os.path.join(file_dir, "sar_image_clean.png")
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
     ds = gdal.Open(img_file)
 
@@ -250,25 +252,42 @@ def create_png(file_dir):
     }
 
     gdal.Warp(warped_file, img_file, **kwargs)
-
+    
     fig = pygmt.Figure()
 
     projection = f"U{utm_zone}/7.65i"
+    
+    # Create and output a "clean" PNG for use in Geodesy overlays    
+    pygmt.makecpt(cmap="gray", series=[0, 300])
+    
+    fig.grdimage(
+        warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
+    )
+    
+    fig.savefig(clean_file, transparent=True)
+    
+    #  Now do it again, but with different settings so we can get nice annotations
+    fig = pygmt.Figure()
     with pygmt.config(
         FONT_LABEL="12p,white",
         FONT_ANNOT_PRIMARY="12p,white",
         MAP_TICK_PEN_PRIMARY="1p,white",
+        PS_PAGE_COLOR="black",
     ):
         pygmt.makecpt(cmap="gray", series=[0, 300])
-
         fig.grdimage(
-            warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
+            warped_file,
+            projection=projection,
+            region=gmt_region,
+            dpi=300,
+            nan_transparent="black",
         )
 
-        # fig.basemap(map_scale="jLB+w1+o0.612i")
-        fig.savefig(out_file, transparent=True)
-
-    return out_file, gmt_region
+        
+        fig.basemap(map_scale="jLB+w1+o0.612i")
+        fig.savefig(out_file, transparent=False)
+        
+    return out_file, clean_file, gmt_region
 
 
 def add_annotations(png_file, volcano, timestamp):
@@ -332,7 +351,7 @@ def sharepoint_upload(file, volcano):
     resp = server.get(request_url)
     print(resp.status_code)
 
-def gen_kmz(file, img_name, img_date, bounds):
+def gen_kmz(file, img_name, bounds):
     file = Path(file)
     kml_template = """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
@@ -349,7 +368,7 @@ def gen_kmz(file, img_name, img_date, bounds):
     </LatLonBox>
 </GroundOverlay>
 </kml>"""
-    kmz_file = datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%dT%H%M%S.kmz')
+    kmz_file = Path(img_name).with_suffix('.kmz')
     kmz_name = file.parent / kmz_file
     west, east, south, north = bounds
     kml = kml_template.format(file=img_name, west=west, east=east, south=south, north=north)
@@ -372,11 +391,12 @@ if __name__ == "__main__":
     # png_file = create_png('testFiles')
     # add_annotations('testFiles/sar_image.png', 'Cleveland', '2023-03-16 12:56')
 
-    packages = get_messages()
+    service = gmail_authenticate()
+    packages, ids = get_messages(service)
     top_dir = Path(config.KML_DIR)
     mattermost, channel_id = connect_to_mattermost()
 
-    for url, volc in packages:
+    for (url, volc), message_id in zip(packages, ids):
         # url = 'ftps://PlankS_GEO3593_5@download.dsda.dlr.de//dims_op_oc_dfd2_693027697_1.tar.gz'
         # volc = 'Shishaldin'
         try:
@@ -385,16 +405,24 @@ if __name__ == "__main__":
         except FileNotFoundError:
             continue
 
-        png_file, png_region = create_png(file_dir.name)
-        kmz_file = gen_kmz(png_file, img_name, img_date, png_region)
+        annotated_file, clean_file, png_region = create_png(file_dir.name)
+        kmz_file = gen_kmz(clean_file, img_name, png_region)
         kml_dir = (
-            top_dir / volc / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%dT%H%M%S')
+            top_dir / volc / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%d')
         )
         os.makedirs(kml_dir, exist_ok=True)
 
+        kmz_dest = kml_dir / kmz_file.name
+        if kmz_dest.is_file():
+            kmz_dest.unlink()
+            
         shutil.move(kmz_file, kml_dir)
-        add_annotations(png_file, volc, img_date)
+        add_annotations(annotated_file, volc, img_date)
 
-        # upload_to_mattermost(img_name.replace('.tif', ''), png_file, volc, mattermost, channel_id)
+        upload_to_mattermost(
+            img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
+        )
+        
+        file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
