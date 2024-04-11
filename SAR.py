@@ -360,12 +360,9 @@ def gen_kmz(file, img_name, bounds):
     <Icon>
         <href>{file}</href>
     </Icon>
-    <LatLonBox>
-        <north>{north}</north>
-        <east>{east}</east>
-        <south>{south}</south>
-        <west>{west}</west>
-    </LatLonBox>
+    <gx:LatLonQuad>
+        <coordinates>{west},{south} {east},{south} {east},{north} {west},{north}</coordinates>
+    </gx:LatLonQuad>
 </GroundOverlay>
 </kml>"""
     kmz_file = Path(img_name).with_suffix('.kmz')
