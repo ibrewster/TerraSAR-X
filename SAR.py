@@ -257,7 +257,7 @@ def create_png(file_dir):
 
     projection = f"U{utm_zone}/7.65i"
     
-    # Create and output a "clean" PNG for use in Geodesy overlays    
+    # Create and output a "clean" PNG for use in Geodesy overlays
     pygmt.makecpt(cmap="gray", series=[0, 300])
     
     fig.grdimage(
@@ -369,6 +369,7 @@ def gen_kmz(file, img_name, bounds):
 </GroundOverlay>
 </kml>"""
     kmz_file = Path(img_name).with_suffix('.kmz')
+    img_name = kmz_file.with_suffix('.png')
     kmz_name = file.parent / kmz_file
     west, east, south, north = bounds
     kml = kml_template.format(file=img_name, west=west, east=east, south=south, north=north)
