@@ -401,6 +401,7 @@ if __name__ == "__main__":
             tar_gz_file = download_package(url)
             file_dir, img_name, img_date = extract_files(tar_gz_file)
         except FileNotFoundError:
+            file_message(service, message_id)
             continue
 
         annotated_file, clean_file, png_region = create_png(file_dir.name)
