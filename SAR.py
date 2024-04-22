@@ -7,11 +7,16 @@ import tempfile
 import tarfile
 import zipfile
 
+import xml.etree.ElementTree as ET
+
+from contextlib import contextmanager
 from datetime import datetime
+
 from io import BytesIO
 from pathlib import Path
 
 import mattermostdriver
+import psycopg
 import pygmt
 
 # import sharepy
@@ -33,6 +38,26 @@ import config
 
 FILEDIR = os.path.dirname(__file__)
 
+@contextmanager
+def PostgresCursor(
+    host='akutan.avo.alaska.edu', database='geodesy', user=None, password=None
+) -> psycopg.Cursor:
+    if user is None:
+        user = getattr(config, "DB_USER", None)
+    if password is None:
+        password = getattr(config, "DB_PASS", None)
+        
+    conn = psycopg.connect(host=host, dbname=database, user=user, password=password)
+    cursor = conn.cursor()
+    
+    yield cursor
+    
+    try:
+        conn.rollback()
+        conn.close()
+    except Exception:
+        pass
+    
 
 def connect_to_mattermost():
     mattermost = mattermostdriver.Driver(
@@ -46,7 +71,7 @@ def connect_to_mattermost():
     mattermost.login()
     channel_id = mattermost.channels.get_channel_by_name_and_team_name(
         config.MATTERMOST_TEAM, config.MATTERMOST_CHANNEL
-    )["id"]
+        )["id"]
     return (mattermost, channel_id)
 
 
@@ -138,10 +163,10 @@ def get_messages(srvice):
                 "body",
                 {
                     "size": 0,
-                },
-            )["size"]
+                    },
+                )["size"]
             > 0
-        ):
+            ):
             body = urlsafe_b64decode(msg["payload"]["parts"][0]["body"]["data"]).decode()
         try:
             download_url = url_pattern.search(body).group(1)
@@ -213,14 +238,16 @@ def extract_files(file):
     return (tempdir, img_name, img_date)
 
 
-def create_png(file_dir):
+def create_png(file_dir, meta):
     print("Processing image")
+    
     gdal.AllRegister()
     gdal.DontUseExceptions()
     img_file = os.path.join(file_dir, "sar_image.tif")
     out_file = os.path.join(file_dir, "sar_image_annotated.png")
     clean_file = os.path.join(file_dir, "sar_image_clean.png")
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
+    cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
     ds = gdal.Open(img_file)
 
     wkt_string = ds.GetProjection()
@@ -237,61 +264,115 @@ def create_png(file_dir):
 
     lrx = ulx + (ds.RasterXSize * xres)
     lry = uly + (ds.RasterYSize * yres)  # yres is negitive
+    png_width = ds.RasterXSize / 300
 
     ds = None
 
     region = [ulx, lry, lrx, uly]
+    # 21 is the magic number recommended by the documentation. I have no idea.
     minLat, minLon, maxLat, maxLon = transform.TransformBounds(*region, 21)
     gmt_region = [minLon, maxLon, minLat, maxLat]
 
+    dest_srs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180"
     kwargs = {
-        "dstSRS": "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180",
+        "dstSRS": dest_srs,
         "multithread": True,
         "warpOptions": ["NUM_THREADS=ALL_CPUS"],
         "creationOptions": ["NUM_THREADS=ALL_CPUS"],
     }
 
     gdal.Warp(warped_file, img_file, **kwargs)
-    
+
     fig = pygmt.Figure()
 
-    projection = f"U{utm_zone}/7.65i"
-    
+    projection = f"U{utm_zone}/{png_width}i"
+
     # Create and output a "clean" PNG for use in Geodesy overlays
     pygmt.makecpt(cmap="gray", series=[0, 300])
-    
+
     fig.grdimage(
         warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
     )
-    
+
     fig.savefig(clean_file, transparent=True)
+
+    #  Now do it again, but with different settings so we can get nice annotations, and crop/rotate
+    half_side = meta['size'] / 2
+    proj_cropped_bounds = [
+        meta['centerx'] - half_side,
+        meta['centery'] - half_side,
+        meta['centerx'] + half_side,
+        meta['centery'] + half_side,
+    ]
     
-    #  Now do it again, but with different settings so we can get nice annotations
+    minLatC, minLonC, maxLatC, maxLonC = transform.TransformBounds(*proj_cropped_bounds, 21)
+    cropped_region = [minLonC, maxLonC, minLatC, maxLatC]
+    gdal_cropped_region = [minLonC, maxLatC, maxLonC, minLatC]
+    
+    gdal.AllRegister()
+    gdal.Warp(cropped_file, warped_file, outputBounds=gdal_cropped_region)
+    
+    cropped_pixel_width = meta['size'] / xres  # xres is meters/pixel
+    cropped_inch_width = cropped_pixel_width / 300  # 300 is pixels per inch
+    
+    print("-----------")
+    print(xres)
+    print(meta['size'])
+    print(cropped_inch_width)
+    print("------------")
+    
+    csl = meta['size'] / 5000  # in km, 1/5 the length of the side
+    cropped_projection = f"M{cropped_inch_width}i"
+    
+    grdimg_args = (
+        {}
+        if meta['rotation'] == 0
+        else {
+            'perspective': meta['rotation'],
+        }
+    )
+    
     fig = pygmt.Figure()
+    with pygmt.config(
+        PS_PAGE_COLOR="black",
+    ):
+        
+        pygmt.makecpt(cmap="gray", series=[0, 300])
+        fig.grdimage(
+            cropped_file,
+            projection=cropped_projection,
+            region=cropped_region,
+            dpi=300,
+            nan_transparent="black",
+            **grdimg_args,
+        )
+
+    with pygmt.config(
+        FONT_LABEL="12p,black",
+        FONT_ANNOT_PRIMARY="12p,black",
+        MAP_TICK_PEN_PRIMARY="1p,black",
+    ):
+
+        fig.basemap(map_scale=f"jLB+w{csl}+o0.224i/0.2i", perspective='180')
+        
     with pygmt.config(
         FONT_LABEL="12p,white",
         FONT_ANNOT_PRIMARY="12p,white",
         MAP_TICK_PEN_PRIMARY="1p,white",
-        PS_PAGE_COLOR="black",
     ):
-        pygmt.makecpt(cmap="gray", series=[0, 300])
-        fig.grdimage(
-            warped_file,
-            projection=projection,
-            region=gmt_region,
-            dpi=300,
-            nan_transparent="black",
-        )
 
-        
-        fig.basemap(map_scale="jLB+w1+o0.612i")
-        fig.savefig(out_file, transparent=False)
-        
+        fig.basemap(map_scale=f"jLB+w{csl}+o0.212i", perspective='0')
+    
+    fig.savefig(out_file, transparent=False)
+
     return out_file, clean_file, gmt_region
 
 
-def add_annotations(png_file, volcano, timestamp):
+def add_annotations(png_file, meta):
     print("Adding Annotations")
+    volcano = meta['volc']
+    timestamp = meta['date'].strftime('%Y-%m-%d %H:%M')
+    
     margin = 24
     img = Image.open(png_file)
     img_width, img_height = img.size
@@ -301,22 +382,26 @@ def add_annotations(png_file, volcano, timestamp):
 {timestamp} UTC"""
 
     font_file = font_manager.findfont("helvetica")
-    font = ImageFont.truetype(font_file, 60)
+    font = ImageFont.truetype(font_file, 50)
     left, top, right, bottom = draw.multiline_textbbox((0, 0), title, font=font)
     text_width = right - left
 
     text_left = img_width - text_width - margin
     text_top = margin
 
-    draw.text((text_left, text_top), title, (255, 255, 255), font=font)
+    txt_left_s = text_left + 2
+    txt_top_s = text_top + 2
+    
+    draw.text((txt_left_s, txt_top_s), title, (0, 0, 0), font=font, align="right")
+    draw.text((text_left, text_top), title, (255, 255, 255), font=font, align="right")
 
     font = ImageFont.truetype(font_file, 30)
 
     cur_year = datetime.today().year
-    copywrite_str = f"""TerraSAR-X/TanDEM-X
+    copyright_str = f"""TerraSAR-X/TanDEM-X
 © DLR e.V.{cur_year}"""
 
-    left, top, right, bottom = draw.multiline_textbbox((0, 0), copywrite_str, font=font)
+    left, top, right, bottom = draw.multiline_textbbox((0, 0), copyright_str, font=font)
     cp_width = right - left
     cp_height = bottom - top
     cp_left = img_width - cp_width - margin
@@ -335,7 +420,10 @@ def add_annotations(png_file, volcano, timestamp):
     logo_left = cp_left - logo_w - 15
     img.paste(logo, (logo_left, logo_top), logo.convert("RGBA"))
 
-    draw.text((cp_left, cp_top), copywrite_str, (128, 128, 128), font=font)
+    shadow_left = cp_left + 2
+    shadow_top = cp_top + 2
+    draw.text((shadow_left, shadow_top), copyright_str, (0, 0, 0), font=font)
+    draw.text((cp_left, cp_top), copyright_str, (255, 255, 255), font=font)
 
     img.save(png_file)
 
@@ -377,18 +465,62 @@ def gen_kmz(file, img_name, bounds):
 
     return kmz_name
 
+def get_img_metadata(file_dir):
+    meta = {}
+    
+    #  Load XML meta
+    tree = ET.parse(os.path.join(file_dir, 'metadata.xml'))
+    root = tree.getroot()
+    mission_info = root.find('productInfo/missionInfo')
+    orbit = mission_info.find('relOrbit').text
+    direction = mission_info.find('orbitDirection').text
+    meta['orbit'] = orbit
+    meta['dir'] = "ASC" if direction == "ASCENDING" else "DESC"
+    order_name = root.find('setup/orderInfo/userData/customerOrderName').text
+    order_id = root.find('setup/orderInfo/userData/customerOrderID').text
+    customer_num = os.path.commonprefix(
+        [order_name, order_id]
+    )  # this could probably be hardcoded, but I'm paranoid.
+
+    order_name = order_name.replace(customer_num, '')
+    
+    order_date = re.search("\d{8}", order_name).group(0)
+    order_search = order_name.replace(order_date, 'YYYYMMDD')
+    
+    scene_date = root.find('productInfo/sceneInfo/start/timeUTC').text
+    scene_date = datetime.strptime(scene_date, '%Y-%m-%dT%H:%M:%S.%fZ')
+    meta['date'] = scene_date
+    
+    meta_sql = """SELECT
+        volcano_name,
+        targetx,
+        targety,
+        side,
+        rotation
+    FROM tsx
+    INNER JOIN volcano
+    ON volcano.volcano_id=tsx.volcano
+    WHERE ordername=%s;"""
+    with PostgresCursor() as cursor:
+        cursor.execute(meta_sql, (order_search,))
+        db_meta = cursor.fetchone()
+        
+    if db_meta is not None:
+        meta['volc'] = db_meta[0]
+        meta['centerx'] = db_meta[1]
+        meta['centery'] = db_meta[2]
+        meta['size'] = db_meta[3]
+        meta['rotation'] = db_meta[4]
+        
+    return meta
 
 if __name__ == "__main__":
-    # from requests_html import HTMLSession
-    # client_id = '00000003-0000-0ff1-ce00-000000000000'
-    # tennant_id = '0693b5ba-4b18-4d7b-9341-f32f400a5494'
-    # session = HTMLSession()
-    # resp = session.get(url)
-    # sharepoint_upload(None, 'Cleveland')
-
-    # png_file = create_png('testFiles')
-    # add_annotations('testFiles/sar_image.png', 'Cleveland', '2023-03-16 12:56')
-
+    file_dir = 'testFiles3'
+    meta = get_img_metadata(file_dir)
+    annotated_file, clean_file, png_region = create_png(file_dir, meta)
+    add_annotations(annotated_file, meta)
+    exit(0)
+    
     service = gmail_authenticate()
     packages, ids = get_messages(service)
     top_dir = Path(config.KML_DIR)
@@ -404,7 +536,8 @@ if __name__ == "__main__":
             file_message(service, message_id)
             continue
 
-        annotated_file, clean_file, png_region = create_png(file_dir.name)
+        meta = get_img_metadata(file_dir.name)
+        annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
         kmz_file = gen_kmz(clean_file, img_name, png_region)
         kml_dir = (
             top_dir / volc / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%d')
@@ -414,14 +547,14 @@ if __name__ == "__main__":
         kmz_dest = kml_dir / kmz_file.name
         if kmz_dest.is_file():
             kmz_dest.unlink()
-            
+
         shutil.move(kmz_file, kml_dir)
         add_annotations(annotated_file, volc, img_date)
 
         upload_to_mattermost(
             img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
         )
-        
+
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
