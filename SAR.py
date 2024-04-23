@@ -1,4 +1,5 @@
 import ftplib
+import math
 import os
 import pickle
 import re
@@ -46,18 +47,18 @@ def PostgresCursor(
         user = getattr(config, "DB_USER", None)
     if password is None:
         password = getattr(config, "DB_PASS", None)
-        
+
     conn = psycopg.connect(host=host, dbname=database, user=user, password=password)
     cursor = conn.cursor()
-    
+
     yield cursor
-    
+
     try:
         conn.rollback()
         conn.close()
     except Exception:
         pass
-    
+
 
 def connect_to_mattermost():
     mattermost = mattermostdriver.Driver(
@@ -240,7 +241,7 @@ def extract_files(file):
 
 def create_png(file_dir, meta):
     print("Processing image")
-    
+
     gdal.AllRegister()
     gdal.DontUseExceptions()
     img_file = os.path.join(file_dir, "sar_image.tif")
@@ -304,26 +305,35 @@ def create_png(file_dir, meta):
         meta['centerx'] + half_side,
         meta['centery'] + half_side,
     ]
-    
+
     minLatC, minLonC, maxLatC, maxLonC = transform.TransformBounds(*proj_cropped_bounds, 21)
     cropped_region = [minLonC, maxLonC, minLatC, maxLatC]
     gdal_cropped_region = [minLonC, maxLatC, maxLonC, minLatC]
-    
+
     gdal.AllRegister()
-    gdal.Warp(cropped_file, warped_file, outputBounds=gdal_cropped_region)
-    
+    image = gdal.Open(img_file)
+    geo_transform = list(image.GetGeoTransform())
+    projection = image.GetProjection()
+    geo_transform[2] = math.radians(-100)
+    geo_transform[4] = math.radians(-100)
+    geo_transform = tuple(geo_transform)
+    image.SetGeoTransform(geo_transform)
+    image.SetProjection(projection)
+
+    gdal.Warp(cropped_file, image, outputBounds=gdal_cropped_region, dstSRS=dest_srs)
+
     cropped_pixel_width = meta['size'] / xres  # xres is meters/pixel
     cropped_inch_width = cropped_pixel_width / 300  # 300 is pixels per inch
-    
+
     print("-----------")
     print(xres)
     print(meta['size'])
     print(cropped_inch_width)
     print("------------")
-    
+
     csl = meta['size'] / 5000  # in km, 1/5 the length of the side
     cropped_projection = f"M{cropped_inch_width}i"
-    
+
     grdimg_args = (
         {}
         if meta['rotation'] == 0
@@ -331,12 +341,12 @@ def create_png(file_dir, meta):
             'perspective': meta['rotation'],
         }
     )
-    
+
     fig = pygmt.Figure()
     with pygmt.config(
         PS_PAGE_COLOR="black",
     ):
-        
+
         pygmt.makecpt(cmap="gray", series=[0, 300])
         fig.grdimage(
             cropped_file,
@@ -354,7 +364,7 @@ def create_png(file_dir, meta):
     ):
 
         fig.basemap(map_scale=f"jLB+w{csl}+o0.224i/0.2i", perspective='180')
-        
+
     with pygmt.config(
         FONT_LABEL="12p,white",
         FONT_ANNOT_PRIMARY="12p,white",
@@ -362,7 +372,7 @@ def create_png(file_dir, meta):
     ):
 
         fig.basemap(map_scale=f"jLB+w{csl}+o0.212i", perspective='0')
-    
+
     fig.savefig(out_file, transparent=False)
 
     return out_file, clean_file, gmt_region
@@ -372,7 +382,7 @@ def add_annotations(png_file, meta):
     print("Adding Annotations")
     volcano = meta['volc']
     timestamp = meta['date'].strftime('%Y-%m-%d %H:%M')
-    
+
     margin = 24
     img = Image.open(png_file)
     img_width, img_height = img.size
@@ -391,7 +401,7 @@ def add_annotations(png_file, meta):
 
     txt_left_s = text_left + 2
     txt_top_s = text_top + 2
-    
+
     draw.text((txt_left_s, txt_top_s), title, (0, 0, 0), font=font, align="right")
     draw.text((text_left, text_top), title, (255, 255, 255), font=font, align="right")
 
@@ -467,7 +477,7 @@ def gen_kmz(file, img_name, bounds):
 
 def get_img_metadata(file_dir):
     meta = {}
-    
+
     #  Load XML meta
     tree = ET.parse(os.path.join(file_dir, 'metadata.xml'))
     root = tree.getroot()
@@ -483,14 +493,14 @@ def get_img_metadata(file_dir):
     )  # this could probably be hardcoded, but I'm paranoid.
 
     order_name = order_name.replace(customer_num, '')
-    
+
     order_date = re.search("\d{8}", order_name).group(0)
     order_search = order_name.replace(order_date, 'YYYYMMDD')
-    
+
     scene_date = root.find('productInfo/sceneInfo/start/timeUTC').text
     scene_date = datetime.strptime(scene_date, '%Y-%m-%dT%H:%M:%S.%fZ')
     meta['date'] = scene_date
-    
+
     meta_sql = """SELECT
         volcano_name,
         targetx,
@@ -504,14 +514,14 @@ def get_img_metadata(file_dir):
     with PostgresCursor() as cursor:
         cursor.execute(meta_sql, (order_search,))
         db_meta = cursor.fetchone()
-        
+
     if db_meta is not None:
         meta['volc'] = db_meta[0]
         meta['centerx'] = db_meta[1]
         meta['centery'] = db_meta[2]
         meta['size'] = db_meta[3]
         meta['rotation'] = db_meta[4]
-        
+
     return meta
 
 if __name__ == "__main__":
@@ -520,7 +530,7 @@ if __name__ == "__main__":
     annotated_file, clean_file, png_region = create_png(file_dir, meta)
     add_annotations(annotated_file, meta)
     exit(0)
-    
+
     service = gmail_authenticate()
     packages, ids = get_messages(service)
     top_dir = Path(config.KML_DIR)
