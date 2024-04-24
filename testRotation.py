@@ -38,7 +38,6 @@ gmt_region = [minLon, maxLon, minLat, maxLat]
 
 # Apply the rotation to the image
 gt = ds.GetGeoTransform()
-angle_r = math.radians(rotation)
 
 meters_to_rotx = centerx - gt[0]
 meters_to_roty = centery - gt[3]  # Will be negitive, but it cancels out correctly.

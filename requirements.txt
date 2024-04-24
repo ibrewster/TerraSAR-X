@@ -6,3 +6,6 @@ numpy
 gdal
 pillow
 matplotlib
+affine
+cairosvg
+svgutils

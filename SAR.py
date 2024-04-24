@@ -16,12 +16,14 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
+import cairosvg
 import mattermostdriver
 import psycopg
 import pygmt
+import svgutils
 
 # import sharepy
-
+from affine import Affine
 from matplotlib import font_manager
 from PIL import Image, ImageDraw, ImageFont
 
@@ -156,6 +158,7 @@ def get_messages(srvice):
     for message in messages:
         message_id = message["id"]
         msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+        
         if msg["payload"]["body"]["size"] > 0:
             body = urlsafe_b64decode(msg["payload"]["body"]["data"]).decode()
         elif (
@@ -169,19 +172,15 @@ def get_messages(srvice):
             > 0
             ):
             body = urlsafe_b64decode(msg["payload"]["parts"][0]["body"]["data"]).decode()
+            
         try:
             download_url = url_pattern.search(body).group(1)
         except AttributeError:
             print("Unable to parse URL from body. Skipping")
             continue
-        name_prefix = download_url.split("@")[0].replace("ftps://", "")
-        name_pattern = f"[nN]ame\s=\s{name_prefix}_([^\s]+)"
-        name_match = re.search(name_pattern, body)
-        package_name = name_match.group(1)
-        volc = package_name.split("_")[0]
-        packages.append((download_url, volc))
+
+        packages.append(download_url)
         ids.append(message_id)
-        # file_message(service, message_id)
 
     return (packages, ids)
 
@@ -239,36 +238,49 @@ def extract_files(file):
     return (tempdir, img_name, img_date)
 
 
-def create_png(file_dir, meta):
-    print("Processing image")
-
-    gdal.AllRegister()
-    gdal.DontUseExceptions()
-    img_file = os.path.join(file_dir, "sar_image.tif")
-    out_file = os.path.join(file_dir, "sar_image_annotated.png")
-    clean_file = os.path.join(file_dir, "sar_image_clean.png")
-    warped_file = os.path.join(file_dir, "sar_image_warped.tif")
-    cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
-    ds = gdal.Open(img_file)
-
+def get_geoinfo(ds):
     wkt_string = ds.GetProjection()
     srs = osr.SpatialReference(wkt=wkt_string)
-    projcs = srs.GetAttrValue("projcs")
-    utm_zone = projcs.split("/")[1].replace("UTM zone", "").strip()
-
+    
     dst_srs = osr.SpatialReference()
     dst_srs.ImportFromEPSG(4326)
 
     transform = osr.CoordinateTransformation(srs, dst_srs)
+    
+    projcs = srs.GetAttrValue("projcs")
+    utm_zone = projcs.split("/")[1].replace("UTM zone", "").strip()
+    
+    return transform, utm_zone
 
+def create_png(file_dir, meta):
+    print("Processing image")
+    gdal.DontUseExceptions()
+    
+    img_file = os.path.join(file_dir, "sar_image.tif")
+    aux_xml_file = img_file + ".aux.xml"
+    if os.path.isfile(aux_xml_file):
+        os.unlink(aux_xml_file)
+
+    clean_file, gmt_region = gen_clean_png(img_file)
+    cropped_file = gen_cropped_png(img_file, meta)
+    
+    return cropped_file, clean_file, gmt_region
+    
+def gen_clean_png(img_file):
+    warped_file = os.path.join(file_dir, "sar_image_warped.tif")
+    clean_file = os.path.join(file_dir, "sar_image_clean.png")
+    
+    gdal.AllRegister()
+    ds = gdal.Open(img_file)
+    
+    transform, utm_zone = get_geoinfo(ds)
+    
     ulx, xres, xskew, uly, yskew, yres = ds.GetGeoTransform()
 
     lrx = ulx + (ds.RasterXSize * xres)
     lry = uly + (ds.RasterYSize * yres)  # yres is negitive
-    png_width = ds.RasterXSize / 300
-
-    ds = None
-
+    png_width = ds.RasterXSize / 300    
+    
     region = [ulx, lry, lrx, uly]
     # 21 is the magic number recommended by the documentation. I have no idea.
     minLat, minLon, maxLat, maxLon = transform.TransformBounds(*region, 21)
@@ -282,7 +294,9 @@ def create_png(file_dir, meta):
         "creationOptions": ["NUM_THREADS=ALL_CPUS"],
     }
 
-    gdal.Warp(warped_file, img_file, **kwargs)
+    gdal.Warp(warped_file, ds, **kwargs)
+    
+    ds = None
 
     fig = pygmt.Figure()
 
@@ -296,51 +310,62 @@ def create_png(file_dir, meta):
     )
 
     fig.savefig(clean_file, transparent=True)
+    
+    return clean_file, gmt_region
 
-    #  Now do it again, but with different settings so we can get nice annotations, and crop/rotate
+
+def gen_cropped_png(img_file, meta):
+    out_file = os.path.join(file_dir, "sar_image_annotated.png")
+    cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
+    
+    gdal.AllRegister()
+    ds = gdal.Open(img_file)
+    
+    transform, utm_zone = get_geoinfo(ds)
+    _, xres, _, _, _, _ = ds.GetGeoTransform()
+    
     half_side = meta['size'] / 2
     proj_cropped_bounds = [
         meta['centerx'] - half_side,
-        meta['centery'] - half_side,
-        meta['centerx'] + half_side,
         meta['centery'] + half_side,
+        meta['centerx'] + half_side,
+        meta['centery'] - half_side,
     ]
 
     minLatC, minLonC, maxLatC, maxLonC = transform.TransformBounds(*proj_cropped_bounds, 21)
-    cropped_region = [minLonC, maxLonC, minLatC, maxLatC]
-    gdal_cropped_region = [minLonC, maxLatC, maxLonC, minLatC]
+    gmt_cropped_region = [minLonC, maxLonC, minLatC, maxLatC]
 
-    gdal.AllRegister()
-    image = gdal.Open(img_file)
-    geo_transform = list(image.GetGeoTransform())
-    projection = image.GetProjection()
-    geo_transform[2] = math.radians(-100)
-    geo_transform[4] = math.radians(-100)
-    geo_transform = tuple(geo_transform)
-    image.SetGeoTransform(geo_transform)
-    image.SetProjection(projection)
+    if meta['rotation'] != 0:
+        ds = rotate_dataset(ds, meta['rotation'], (meta['centerx'], meta['centery']))
 
-    gdal.Warp(cropped_file, image, outputBounds=gdal_cropped_region, dstSRS=dest_srs)
+    # Crop the image to the desired region (in-memory)
+    gdal.Warp(
+        '/vsimem/cropped.tif',
+        ds,
+        outputBounds=proj_cropped_bounds,
+        multithread=True,
+        warpOptions=['NUM_THREADS=ALL_CPUS'],
+        creationOptions=['NUM_THREADS=ALL_CPUS'],
+    )
 
+    #  Re-project the cropped image to lat/lon so it plays nicely with pygmt
+    gdal.Warp(
+        cropped_file,
+        '/vsimem/cropped.tif',
+        multithread=True,
+        warpOptions=['NUM_THREADS=ALL_CPUS'],
+        creationOptions=['NUM_THREADS=ALL_CPUS'],
+        dstSRS="+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180",
+    )
+    
+    gdal.Unlink('/vsimem/cropped.tif')
+    ds = None
+    
     cropped_pixel_width = meta['size'] / xres  # xres is meters/pixel
     cropped_inch_width = cropped_pixel_width / 300  # 300 is pixels per inch
-
-    print("-----------")
-    print(xres)
-    print(meta['size'])
-    print(cropped_inch_width)
-    print("------------")
-
-    csl = meta['size'] / 5000  # in km, 1/5 the length of the side
-    cropped_projection = f"M{cropped_inch_width}i"
-
-    grdimg_args = (
-        {}
-        if meta['rotation'] == 0
-        else {
-            'perspective': meta['rotation'],
-        }
-    )
+    csl = meta['size'] / 5  # Length of the scale bar in meters, 1/5 the length of the side
+    
+    cropped_projection = f"U{utm_zone}/{cropped_inch_width}i"
 
     fig = pygmt.Figure()
     with pygmt.config(
@@ -351,10 +376,9 @@ def create_png(file_dir, meta):
         fig.grdimage(
             cropped_file,
             projection=cropped_projection,
-            region=cropped_region,
+            region=gmt_cropped_region,
             dpi=300,
             nan_transparent="black",
-            **grdimg_args,
         )
 
     with pygmt.config(
@@ -363,7 +387,7 @@ def create_png(file_dir, meta):
         MAP_TICK_PEN_PRIMARY="1p,black",
     ):
 
-        fig.basemap(map_scale=f"jLB+w{csl}+o0.224i/0.2i", perspective='180')
+        fig.basemap(map_scale=f"jLB+w{csl}e+o0.224i/0.2i")
 
     with pygmt.config(
         FONT_LABEL="12p,white",
@@ -371,13 +395,86 @@ def create_png(file_dir, meta):
         MAP_TICK_PEN_PRIMARY="1p,white",
     ):
 
-        fig.basemap(map_scale=f"jLB+w{csl}+o0.212i", perspective='0')
+        fig.basemap(map_scale=f"jLB+w{csl}e+o0.212i")
 
     fig.savefig(out_file, transparent=False)
 
-    return out_file, clean_file, gmt_region
+    return out_file
 
+def rotate_dataset(ds, angle, point):
+    gt = ds.GetGeoTransform()
+    
+    meters_to_rotx = point[0] - gt[0]
+    meters_to_roty = point[1] - gt[3]  # Will be negitive, but it cancels out correctly.
+    
+    xrot = meters_to_rotx / gt[1]
+    yrot = meters_to_roty / gt[5]
+    
+    pivot = (xrot, yrot)
+    
+    affine_src = Affine.from_gdal(*gt)
+    affine_dest = affine_src * affine_src.rotation(angle, pivot)
+    new_gt = affine_dest.to_gdal()
+    
+    ds.SetGeoTransform(new_gt)
+    
+    return ds
 
+def add_north(png_file, meta, margin):
+    script_dir = os.path.dirname(__file__)
+    svg_file = os.path.join(script_dir, 'NorthArrow.svg')
+    svg = svgutils.transform.fromfile(svg_file)
+    angle = math.radians(meta['rotation'])
+    
+    cur_width = float(svg.width)
+    cur_height = float(svg.height)
+    
+    transformed_svg = svg.getroot()
+    
+    # Start by rotating around the center
+    transformed_svg.rotate(meta['rotation'], cur_width / 2, cur_height / 2)
+    
+    # calculate the bounding box size for the rotated image
+    rotated_width = cur_width * abs(math.cos(angle)) + cur_height * abs(math.sin(angle))
+    rotated_height = cur_width * abs(math.sin(angle)) + cur_height * abs(math.cos(angle))
+
+    #  Figure out the shift needed to place the rotated figure back at 0,0
+    width_diff = rotated_width - cur_width
+    height_diff = rotated_height - cur_height
+    
+    x_shift = width_diff / 2
+    y_shift = height_diff / 2
+    
+    transformed_svg.moveto(x_shift, y_shift)
+    
+    # Calculate the scaling factor to produce a good size on the final image
+    img_width = png_file.size[0]
+    arrow_width = img_width / 10  # one-tenth of the original width is reasonable.
+    
+    # Calculate the scale factor needed to obtain the desired width, and scale the SVG
+    scale_factor = arrow_width / rotated_width
+    transformed_svg.scale(scale_factor)
+
+    # Calculate the new size after scaling.
+    scaled_width = rotated_width * scale_factor
+    scaled_height = rotated_height * scale_factor
+
+    fig = svgutils.transform.SVGFigure(scaled_width, scaled_height)
+    fig.append(transformed_svg)
+    fig.set_size((f"{scaled_width}", f"{scaled_height}"))
+        
+    svg_data = BytesIO(fig.to_str())
+    svg_data.seek(0)
+
+    # convert to a PNG
+    png_data = cairosvg.svg2png(file_obj=svg_data)
+    north = Image.open(BytesIO(png_data))
+    
+    # and add it to the image
+    png_file.paste(north, (margin, margin), north.convert("RGBA"))
+    
+    
+    
 def add_annotations(png_file, meta):
     print("Adding Annotations")
     volcano = meta['volc']
@@ -392,9 +489,21 @@ def add_annotations(png_file, meta):
 {timestamp} UTC"""
 
     font_file = font_manager.findfont("helvetica")
-    font = ImageFont.truetype(font_file, 50)
-    left, top, right, bottom = draw.multiline_textbbox((0, 0), title, font=font)
-    text_width = right - left
+    font_size = 8  # start with a minimum size
+    text_width_target = img.size[0] / 4  # One-quarter image width.
+    
+    # technically gives a font producing a size slightly larger than desired, 
+    # but only by one font size so not quibbling.
+    while True:
+        font = ImageFont.truetype(font_file, font_size)
+        left, top, right, bottom = draw.multiline_textbbox((0, 0), title, font=font)
+        text_width = right - left
+        if text_width >= text_width_target:
+            break
+        
+        font_size += 1
+        
+    print("Using font size of", font_size)
 
     text_left = img_width - text_width - margin
     text_top = margin
@@ -405,7 +514,7 @@ def add_annotations(png_file, meta):
     draw.text((txt_left_s, txt_top_s), title, (0, 0, 0), font=font, align="right")
     draw.text((text_left, text_top), title, (255, 255, 255), font=font, align="right")
 
-    font = ImageFont.truetype(font_file, 30)
+    font = ImageFont.truetype(font_file, round(font_size / 1.6))
 
     cur_year = datetime.today().year
     copyright_str = f"""TerraSAR-X/TanDEM-X
@@ -434,6 +543,9 @@ def add_annotations(png_file, meta):
     shadow_top = cp_top + 2
     draw.text((shadow_left, shadow_top), copyright_str, (0, 0, 0), font=font)
     draw.text((cp_left, cp_top), copyright_str, (255, 255, 255), font=font)
+    
+    if meta['rotation'] != 0:
+        add_north(img, meta, margin)
 
     img.save(png_file)
 
@@ -536,9 +648,7 @@ if __name__ == "__main__":
     top_dir = Path(config.KML_DIR)
     mattermost, channel_id = connect_to_mattermost()
 
-    for (url, volc), message_id in zip(packages, ids):
-        # url = 'ftps://PlankS_GEO3593_5@download.dsda.dlr.de//dims_op_oc_dfd2_693027697_1.tar.gz'
-        # volc = 'Shishaldin'
+    for url, message_id in zip(packages, ids):
         try:
             tar_gz_file = download_package(url)
             file_dir, img_name, img_date = extract_files(tar_gz_file)
@@ -547,6 +657,7 @@ if __name__ == "__main__":
             continue
 
         meta = get_img_metadata(file_dir.name)
+        volc = meta['volc']
         annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
         kmz_file = gen_kmz(clean_file, img_name, png_region)
         kml_dir = (
