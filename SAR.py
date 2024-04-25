@@ -261,12 +261,12 @@ def create_png(file_dir, meta):
     if os.path.isfile(aux_xml_file):
         os.unlink(aux_xml_file)
 
-    clean_file, gmt_region = gen_clean_png(img_file)
-    cropped_file = gen_cropped_png(img_file, meta)
+    clean_file, gmt_region = gen_clean_png(img_file, file_dir)
+    cropped_file = gen_cropped_png(img_file, file_dir, meta)
     
     return cropped_file, clean_file, gmt_region
     
-def gen_clean_png(img_file):
+def gen_clean_png(img_file, file_dir):
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
     clean_file = os.path.join(file_dir, "sar_image_clean.png")
     
@@ -314,7 +314,7 @@ def gen_clean_png(img_file):
     return clean_file, gmt_region
 
 
-def gen_cropped_png(img_file, meta):
+def gen_cropped_png(img_file, file_dir, meta):
     out_file = os.path.join(file_dir, "sar_image_annotated.png")
     cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
     
@@ -478,6 +478,7 @@ def add_north(png_file, meta, margin):
 def add_annotations(png_file, meta):
     print("Adding Annotations")
     volcano = meta['volc']
+    mission = meta['mission']
     timestamp = meta['date'].strftime('%Y-%m-%d %H:%M')
 
     margin = 24
@@ -485,7 +486,7 @@ def add_annotations(png_file, meta):
     img_width, img_height = img.size
     draw = ImageDraw.Draw(img)
 
-    title = f"""{volcano} TerraSAR-X
+    title = f"""{volcano} {mission}
 {timestamp} UTC"""
 
     font_file = font_manager.findfont("helvetica")
@@ -587,15 +588,26 @@ def gen_kmz(file, img_name, bounds):
 
     return kmz_name
 
+mission_lookup = {
+    'TDX-1': 'TanDEM-X',
+    'TSX-1': 'TerraSAR-X',
+}
+
 def get_img_metadata(file_dir):
     meta = {}
 
     #  Load XML meta
     tree = ET.parse(os.path.join(file_dir, 'metadata.xml'))
     root = tree.getroot()
+    
+    #  Pull some data about the mission that produced this image
     mission_info = root.find('productInfo/missionInfo')
     orbit = mission_info.find('relOrbit').text
     direction = mission_info.find('orbitDirection').text
+    mission = mission_info.find('mission').text
+    print(mission)
+    mission_name = mission_lookup.get(mission, 'TerraSAR-X')
+    meta['mission'] = mission_name
     meta['orbit'] = orbit
     meta['dir'] = "ASC" if direction == "ASCENDING" else "DESC"
     order_name = root.find('setup/orderInfo/userData/customerOrderName').text
@@ -637,12 +649,6 @@ def get_img_metadata(file_dir):
     return meta
 
 if __name__ == "__main__":
-    file_dir = 'testFiles3'
-    meta = get_img_metadata(file_dir)
-    annotated_file, clean_file, png_region = create_png(file_dir, meta)
-    add_annotations(annotated_file, meta)
-    exit(0)
-
     service = gmail_authenticate()
     packages, ids = get_messages(service)
     top_dir = Path(config.KML_DIR)
@@ -670,7 +676,7 @@ if __name__ == "__main__":
             kmz_dest.unlink()
 
         shutil.move(kmz_file, kml_dir)
-        add_annotations(annotated_file, volc, img_date)
+        add_annotations(annotated_file, meta)
 
         upload_to_mattermost(
             img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
