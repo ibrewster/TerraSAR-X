@@ -158,7 +158,7 @@ def get_messages(srvice):
     for message in messages:
         message_id = message["id"]
         msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
-        
+
         if msg["payload"]["body"]["size"] > 0:
             body = urlsafe_b64decode(msg["payload"]["body"]["data"]).decode()
         elif (
@@ -172,7 +172,7 @@ def get_messages(srvice):
             > 0
             ):
             body = urlsafe_b64decode(msg["payload"]["parts"][0]["body"]["data"]).decode()
-            
+
         try:
             download_url = url_pattern.search(body).group(1)
         except AttributeError:
@@ -241,21 +241,21 @@ def extract_files(file):
 def get_geoinfo(ds):
     wkt_string = ds.GetProjection()
     srs = osr.SpatialReference(wkt=wkt_string)
-    
+
     dst_srs = osr.SpatialReference()
     dst_srs.ImportFromEPSG(4326)
 
     transform = osr.CoordinateTransformation(srs, dst_srs)
-    
+
     projcs = srs.GetAttrValue("projcs")
     utm_zone = projcs.split("/")[1].replace("UTM zone", "").strip()
-    
+
     return transform, utm_zone
 
 def create_png(file_dir, meta):
     print("Processing image")
     gdal.DontUseExceptions()
-    
+
     img_file = os.path.join(file_dir, "sar_image.tif")
     aux_xml_file = img_file + ".aux.xml"
     if os.path.isfile(aux_xml_file):
@@ -269,18 +269,20 @@ def create_png(file_dir, meta):
 def gen_clean_png(img_file, file_dir):
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
     clean_file = os.path.join(file_dir, "sar_image_clean.png")
-    
+
     gdal.AllRegister()
     ds = gdal.Open(img_file)
-    
+
     transform, utm_zone = get_geoinfo(ds)
-    
+
     ulx, xres, xskew, uly, yskew, yres = ds.GetGeoTransform()
 
     lrx = ulx + (ds.RasterXSize * xres)
     lry = uly + (ds.RasterYSize * yres)  # yres is negitive
-    png_width = ds.RasterXSize / 300    
-    
+    png_width = ds.RasterXSize / 300
+    if png_width > 100:
+        png_width = 100
+
     region = [ulx, lry, lrx, uly]
     # 21 is the magic number recommended by the documentation. I have no idea.
     minLat, minLon, maxLat, maxLon = transform.TransformBounds(*region, 21)
@@ -295,7 +297,7 @@ def gen_clean_png(img_file, file_dir):
     }
 
     gdal.Warp(warped_file, ds, **kwargs)
-    
+
     ds = None
 
     fig = pygmt.Figure()
@@ -310,20 +312,19 @@ def gen_clean_png(img_file, file_dir):
     )
 
     fig.savefig(clean_file, transparent=True)
-    
+
     return clean_file, gmt_region
 
 
 def gen_cropped_png(img_file, file_dir, meta):
     out_file = os.path.join(file_dir, "sar_image_annotated.png")
     cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
-    
+
     gdal.AllRegister()
     ds = gdal.Open(img_file)
-    
+
     transform, utm_zone = get_geoinfo(ds)
-    _, xres, _, _, _, _ = ds.GetGeoTransform()
-    
+
     half_side = meta['size'] / 2
     proj_cropped_bounds = [
         meta['centerx'] - half_side,
@@ -357,14 +358,14 @@ def gen_cropped_png(img_file, file_dir, meta):
         creationOptions=['NUM_THREADS=ALL_CPUS'],
         dstSRS="+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180",
     )
-    
+
     gdal.Unlink('/vsimem/cropped.tif')
     ds = None
-    
-    cropped_pixel_width = meta['size'] / xres  # xres is meters/pixel
-    cropped_inch_width = cropped_pixel_width / 300  # 300 is pixels per inch
+
+    cropped_inch_width = 6
+
     csl = meta['size'] / 5  # Length of the scale bar in meters, 1/5 the length of the side
-    
+
     cropped_projection = f"U{utm_zone}/{cropped_inch_width}i"
 
     fig = pygmt.Figure()
@@ -403,21 +404,21 @@ def gen_cropped_png(img_file, file_dir, meta):
 
 def rotate_dataset(ds, angle, point):
     gt = ds.GetGeoTransform()
-    
+
     meters_to_rotx = point[0] - gt[0]
     meters_to_roty = point[1] - gt[3]  # Will be negitive, but it cancels out correctly.
-    
+
     xrot = meters_to_rotx / gt[1]
     yrot = meters_to_roty / gt[5]
-    
+
     pivot = (xrot, yrot)
-    
+
     affine_src = Affine.from_gdal(*gt)
     affine_dest = affine_src * affine_src.rotation(angle, pivot)
     new_gt = affine_dest.to_gdal()
-    
+
     ds.SetGeoTransform(new_gt)
-    
+
     return ds
 
 def add_north(png_file, meta, margin):
@@ -425,15 +426,15 @@ def add_north(png_file, meta, margin):
     svg_file = os.path.join(script_dir, 'NorthArrow.svg')
     svg = svgutils.transform.fromfile(svg_file)
     angle = math.radians(meta['rotation'])
-    
+
     cur_width = float(svg.width)
     cur_height = float(svg.height)
-    
+
     transformed_svg = svg.getroot()
-    
+
     # Start by rotating around the center
     transformed_svg.rotate(meta['rotation'], cur_width / 2, cur_height / 2)
-    
+
     # calculate the bounding box size for the rotated image
     rotated_width = cur_width * abs(math.cos(angle)) + cur_height * abs(math.sin(angle))
     rotated_height = cur_width * abs(math.sin(angle)) + cur_height * abs(math.cos(angle))
@@ -441,16 +442,16 @@ def add_north(png_file, meta, margin):
     #  Figure out the shift needed to place the rotated figure back at 0,0
     width_diff = rotated_width - cur_width
     height_diff = rotated_height - cur_height
-    
+
     x_shift = width_diff / 2
     y_shift = height_diff / 2
-    
+
     transformed_svg.moveto(x_shift, y_shift)
-    
+
     # Calculate the scaling factor to produce a good size on the final image
     img_width = png_file.size[0]
     arrow_width = img_width / 10  # one-tenth of the original width is reasonable.
-    
+
     # Calculate the scale factor needed to obtain the desired width, and scale the SVG
     scale_factor = arrow_width / rotated_width
     transformed_svg.scale(scale_factor)
@@ -462,19 +463,19 @@ def add_north(png_file, meta, margin):
     fig = svgutils.transform.SVGFigure(scaled_width, scaled_height)
     fig.append(transformed_svg)
     fig.set_size((f"{scaled_width}", f"{scaled_height}"))
-        
+
     svg_data = BytesIO(fig.to_str())
     svg_data.seek(0)
 
     # convert to a PNG
     png_data = cairosvg.svg2png(file_obj=svg_data)
     north = Image.open(BytesIO(png_data))
-    
+
     # and add it to the image
     png_file.paste(north, (margin, margin), north.convert("RGBA"))
-    
-    
-    
+
+
+
 def add_annotations(png_file, meta):
     print("Adding Annotations")
     volcano = meta['volc']
@@ -491,9 +492,9 @@ def add_annotations(png_file, meta):
 
     font_file = font_manager.findfont("helvetica")
     font_size = 8  # start with a minimum size
-    text_width_target = img.size[0] / 4  # One-quarter image width.
-    
-    # technically gives a font producing a size slightly larger than desired, 
+    text_width_target = img.size[0] / 3  # One-third image width.
+
+    # technically gives a font producing a size slightly larger than desired,
     # but only by one font size so not quibbling.
     while True:
         font = ImageFont.truetype(font_file, font_size)
@@ -501,9 +502,9 @@ def add_annotations(png_file, meta):
         text_width = right - left
         if text_width >= text_width_target:
             break
-        
+
         font_size += 1
-        
+
     print("Using font size of", font_size)
 
     text_left = img_width - text_width - margin
@@ -544,7 +545,7 @@ def add_annotations(png_file, meta):
     shadow_top = cp_top + 2
     draw.text((shadow_left, shadow_top), copyright_str, (0, 0, 0), font=font)
     draw.text((cp_left, cp_top), copyright_str, (255, 255, 255), font=font)
-    
+
     if meta['rotation'] != 0:
         add_north(img, meta, margin)
 
