@@ -9,3 +9,5 @@ matplotlib
 affine
 cairosvg
 svgutils
+psycopg-binary
+psycopg
