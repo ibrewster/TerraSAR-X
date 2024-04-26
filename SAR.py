@@ -651,6 +651,13 @@ def get_img_metadata(file_dir):
     return meta
 
 if __name__ == "__main__":
+    ############ DEBUG ###################
+    # file_dir = "testFiles3"
+    # meta = get_img_metadata(file_dir)
+    # annotated_file = gen_cropped_png('testFiles3/sar_image.tif', file_dir, meta)
+    # add_annotations(annotated_file, meta)
+    # exit(0)
+    ######################################
     service = gmail_authenticate()
     packages, ids = get_messages(service)
     top_dir = Path(config.KML_DIR)
