@@ -552,16 +552,17 @@ def add_annotations(png_file, meta):
     img.save(png_file)
 
 
-def sharepoint_upload(file, volcano):
-    api_url = "https://doimspp.sharepoint.com/sites/GS-VSCAVOall/_api/web"
-    list_url = f"getfolderbyserverrelativeurl('/sites/GS-VSCAVOall/Shared%20Documents/AVOfileshare/GEOPHYSICS/SAR/{volcano}')/Files"
-    request_url = f"{api_url}/{list_url}"
+# def sharepoint_upload(file, volcano):
+    # api_url = "https://doimspp.sharepoint.com/sites/GS-VSCAVOall/_api/web"
+    # list_url = f"getfolderbyserverrelativeurl('/sites/GS-VSCAVOall/Shared%20Documents/AVOfileshare/GEOPHYSICS/SAR/{volcano}')/Files"
+    # request_url = f"{api_url}/{list_url}"
 
-    server = sharepy.connect(
-        "doimspp.sharepoint.com", username=config.shareUSER, password=config.sharePASS
-    )
-    resp = server.get(request_url)
-    print(resp.status_code)
+    # server = sharepy.connect(
+        # "doimspp.sharepoint.com", username=config.shareUSER, password=config.sharePASS
+    # )
+    # resp = server.get(request_url)
+    # print(resp.status_code)
+    
 
 def gen_kmz(file, img_name, bounds):
     file = Path(file)
@@ -668,7 +669,9 @@ if __name__ == "__main__":
         annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
         kmz_file = gen_kmz(clean_file, img_name, png_region)
         kml_dir = (
-            top_dir / volc / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%d')
+            top_dir
+            / f"Orbit {meta['orbit']}-{meta['dir']}"
+            / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%d')
         )
         os.makedirs(kml_dir, exist_ok=True)
 
