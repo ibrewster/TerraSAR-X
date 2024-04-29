@@ -263,12 +263,12 @@ def create_png(file_dir, meta):
 
     clean_file, gmt_region = gen_clean_png(img_file, file_dir)
     cropped_file = gen_cropped_png(img_file, file_dir, meta)
-    
+
     return cropped_file, clean_file, gmt_region
-    
+
 def gen_clean_png(img_file, file_dir):
     warped_file = os.path.join(file_dir, "sar_image_warped.tif")
-    clean_file = os.path.join(file_dir, "sar_image_clean.png")
+    clean_file = os.path.join(file_dir, "sar_image_clean.tiff")
 
     gdal.AllRegister()
     ds = gdal.Open(img_file)
@@ -311,7 +311,7 @@ def gen_clean_png(img_file, file_dir):
         warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
     )
 
-    fig.savefig(clean_file, transparent=True)
+    fig.savefig(clean_file, transparent=False)
 
     return clean_file, gmt_region
 
@@ -601,7 +601,7 @@ def get_img_metadata(file_dir):
     #  Load XML meta
     tree = ET.parse(os.path.join(file_dir, 'metadata.xml'))
     root = tree.getroot()
-    
+
     #  Pull some data about the mission that produced this image
     mission_info = root.find('productInfo/missionInfo')
     orbit = mission_info.find('relOrbit').text
