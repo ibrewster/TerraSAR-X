@@ -32,7 +32,7 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-from osgeo import gdal, osr
+from osgeo import gdal, osr, gdalconst
 
 # for encoding/decoding messages in base64
 from base64 import urlsafe_b64decode
@@ -226,16 +226,10 @@ def extract_files(file):
         img_path = os.path.join(td, img_file)
         xml_path = os.path.join(td, xml_file)
 
-        img_name = os.path.basename(img_path)
-        xml_name = os.path.basename(xml_path)
-
-        date_parts = re.search("_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})", xml_name).groups()
-        img_date = f"{'-'.join(date_parts[:3])} {':'.join(date_parts[-2:])}"
-
         shutil.move(img_path, os.path.join(tempdir.name, "sar_image.tif"))
         shutil.move(xml_path, os.path.join(tempdir.name, "metadata.xml"))
 
-    return (tempdir, img_name, img_date)
+    return tempdir
 
 
 def get_geoinfo(ds):
@@ -261,14 +255,14 @@ def create_png(file_dir, meta):
     if os.path.isfile(aux_xml_file):
         os.unlink(aux_xml_file)
 
-    clean_file, gmt_region = gen_clean_png(img_file, file_dir)
-    cropped_file = gen_cropped_png(img_file, file_dir, meta)
+    clean_file, gmt_region = gen_clean_png(file_dir)
+    cropped_file = gen_cropped_png(file_dir, meta)
 
     return cropped_file, clean_file, gmt_region
 
-def gen_clean_png(img_file, file_dir):
-    warped_file = os.path.join(file_dir, "sar_image_warped.tif")
-    clean_file = os.path.join(file_dir, "sar_image_clean.tiff")
+def gen_clean_png(file_dir):
+    img_file = os.path.join(file_dir, "sar_image.tif")
+    clean_file = os.path.join(file_dir, "sar_image_clean.png")
 
     gdal.AllRegister()
     ds = gdal.Open(img_file)
@@ -279,44 +273,54 @@ def gen_clean_png(img_file, file_dir):
 
     lrx = ulx + (ds.RasterXSize * xres)
     lry = uly + (ds.RasterYSize * yres)  # yres is negitive
-    png_width = ds.RasterXSize / 300
-    if png_width > 100:
-        png_width = 100
 
     region = [ulx, lry, lrx, uly]
+
     # 21 is the magic number recommended by the documentation. I have no idea.
     minLat, minLon, maxLat, maxLon = transform.TransformBounds(*region, 21)
     gmt_region = [minLon, maxLon, minLat, maxLat]
 
+    png_opts = {
+        "outputType": gdalconst.GDT_Byte,  # 0-255
+        "noData": 0,
+    }
+
+    mem_file_path = "/vsimem/scaled_image.tiff"
+    gdal.Translate(mem_file_path, ds, **png_opts)
+
+    # Figure out if we need to drop the resolution
+    max_size = 20000  # Chrome max size (maybe)
+    max_dim = max(ds.RasterXSize, ds.RasterYSize)
+    if max_dim > max_size:
+        reduction_factor = max_dim / max_size
+        new_xres = xres * reduction_factor
+        new_yres = yres * reduction_factor
+
+        resized_path = "/vsimem/resized_image.tiff"
+        gdal.Warp(resized_path, mem_file_path, xRes=new_xres, yRes=new_yres)
+        gdal.Unlink(mem_file_path)
+        mem_file_path = resized_path
+
+
     dest_srs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180"
+
     kwargs = {
         "dstSRS": dest_srs,
         "multithread": True,
         "warpOptions": ["NUM_THREADS=ALL_CPUS"],
-        "creationOptions": ["NUM_THREADS=ALL_CPUS"],
+        "creationOptions": ["worldfile=no"],
     }
 
-    gdal.Warp(warped_file, ds, **kwargs)
+    gdal.Warp(clean_file, mem_file_path, **kwargs)
 
     ds = None
-
-    fig = pygmt.Figure()
-
-    projection = f"U{utm_zone}/{png_width}i"
-
-    # Create and output a "clean" PNG for use in Geodesy overlays
-    pygmt.makecpt(cmap="gray", series=[0, 300])
-
-    fig.grdimage(
-        warped_file, projection=projection, region=gmt_region, dpi=300, nan_transparent="black"
-    )
-
-    fig.savefig(clean_file, transparent=False)
+    gdal.Unlink(mem_file_path)
 
     return clean_file, gmt_region
 
 
-def gen_cropped_png(img_file, file_dir, meta):
+def gen_cropped_png(file_dir, meta):
+    img_file = os.path.join(file_dir, "sar_image.tif")
     out_file = os.path.join(file_dir, "sar_image_annotated.png")
     cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
 
@@ -562,9 +566,9 @@ def add_annotations(png_file, meta):
     # )
     # resp = server.get(request_url)
     # print(resp.status_code)
-    
 
-def gen_kmz(file, img_name, bounds):
+
+def gen_kmz(file, meta, bounds):
     file = Path(file)
     kml_template = """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
@@ -578,6 +582,7 @@ def gen_kmz(file, img_name, bounds):
     </gx:LatLonQuad>
 </GroundOverlay>
 </kml>"""
+    img_name = meta['imgName']
     kmz_file = Path(img_name).with_suffix('.kmz')
     img_name = kmz_file.with_suffix('.png')
     kmz_name = file.parent / kmz_file
@@ -627,6 +632,10 @@ def get_img_metadata(file_dir):
     scene_date = datetime.strptime(scene_date, '%Y-%m-%dT%H:%M:%S.%fZ')
     meta['date'] = scene_date
 
+    # Image file name
+    img_name = root.find('productComponents/imageData/file/location/filename').text
+    meta['imgName'] = img_name
+
     meta_sql = """SELECT
         volcano_name,
         targetx,
@@ -651,22 +660,32 @@ def get_img_metadata(file_dir):
     return meta
 
 if __name__ == "__main__":
-    ############ DEBUG ###################
-    # file_dir = "testFiles3"
-    # meta = get_img_metadata(file_dir)
-    # annotated_file = gen_cropped_png('testFiles3/sar_image.tif', file_dir, meta)
-    # add_annotations(annotated_file, meta)
-    # exit(0)
-    ######################################
+    top_dir = Path(config.KML_DIR)
+
+    ########### DEBUG ############
+    file_dir = 'testFiles5'
+    meta = get_img_metadata(file_dir)
+    clean_file, png_region = gen_clean_png(file_dir)
+    kmz_file = gen_kmz(clean_file, meta, png_region)
+    kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
+    os.makedirs(kml_dir, exist_ok=True)
+
+    kmz_dest = kml_dir / kmz_file.name
+    if kmz_dest.is_file():
+        kmz_dest.unlink()
+
+    shutil.move(kmz_file, kml_dir)
+    exit(0)
+    ##############################
+
     service = gmail_authenticate()
     packages, ids = get_messages(service)
-    top_dir = Path(config.KML_DIR)
     mattermost, channel_id = connect_to_mattermost()
 
     for url, message_id in zip(packages, ids):
         try:
             tar_gz_file = download_package(url)
-            file_dir, img_name, img_date = extract_files(tar_gz_file)
+            file_dir = extract_files(tar_gz_file)
         except FileNotFoundError:
             file_message(service, message_id)
             continue
@@ -674,12 +693,8 @@ if __name__ == "__main__":
         meta = get_img_metadata(file_dir.name)
         volc = meta['volc']
         annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
-        kmz_file = gen_kmz(clean_file, img_name, png_region)
-        kml_dir = (
-            top_dir
-            / f"Orbit {meta['orbit']}-{meta['dir']}"
-            / datetime.strptime(img_date, '%Y-%m-%d %H:%M').strftime('%Y%m%d')
-        )
+        kmz_file = gen_kmz(clean_file, meta, png_region)
+        kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
         os.makedirs(kml_dir, exist_ok=True)
 
         kmz_dest = kml_dir / kmz_file.name
@@ -689,9 +704,9 @@ if __name__ == "__main__":
         shutil.move(kmz_file, kml_dir)
         add_annotations(annotated_file, meta)
 
-        upload_to_mattermost(
-            img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
-        )
+        # upload_to_mattermost(
+            # img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
+        # )
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
