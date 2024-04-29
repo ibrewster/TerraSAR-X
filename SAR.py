@@ -663,19 +663,19 @@ if __name__ == "__main__":
     top_dir = Path(config.KML_DIR)
 
     ########### DEBUG ############
-    file_dir = 'testFiles5'
-    meta = get_img_metadata(file_dir)
-    clean_file, png_region = gen_clean_png(file_dir)
-    kmz_file = gen_kmz(clean_file, meta, png_region)
-    kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
-    os.makedirs(kml_dir, exist_ok=True)
+    # file_dir = 'testFiles5'
+    # meta = get_img_metadata(file_dir)
+    # clean_file, png_region = gen_clean_png(file_dir)
+    # kmz_file = gen_kmz(clean_file, meta, png_region)
+    # kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
+    # os.makedirs(kml_dir, exist_ok=True)
 
-    kmz_dest = kml_dir / kmz_file.name
-    if kmz_dest.is_file():
-        kmz_dest.unlink()
+    # kmz_dest = kml_dir / kmz_file.name
+    # if kmz_dest.is_file():
+        # kmz_dest.unlink()
 
-    shutil.move(kmz_file, kml_dir)
-    exit(0)
+    # shutil.move(kmz_file, kml_dir)
+    # exit(0)
     ##############################
 
     service = gmail_authenticate()
@@ -704,9 +704,9 @@ if __name__ == "__main__":
         shutil.move(kmz_file, kml_dir)
         add_annotations(annotated_file, meta)
 
-        # upload_to_mattermost(
-            # img_name.replace('.tif', ''), annotated_file, volc, mattermost, channel_id
-        # )
+        upload_to_mattermost(
+            meta['imgName'].replace('.tif', ''), annotated_file, volc, mattermost, channel_id
+        )
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
