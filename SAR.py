@@ -204,7 +204,7 @@ def download_package(url):
     print("Downloaded file", filename)
 
     filedata.seek(0)  # go back to the begining for reading
-    return filedata
+    return filedata, filename
 
 
 def extract_files(file):
@@ -321,7 +321,10 @@ def gen_clean_png(file_dir):
 
 def gen_cropped_png(file_dir, meta):
     img_file = os.path.join(file_dir, "sar_image.tif")
-    out_file = os.path.join(file_dir, "sar_image_annotated.png")
+
+    filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}.png"
+
+    out_file = os.path.join(file_dir, filename)
     cropped_file = os.path.join(file_dir, "sar_image_cropped.tif")
 
     gdal.AllRegister()
@@ -661,6 +664,9 @@ def get_img_metadata(file_dir):
 
 if __name__ == "__main__":
     top_dir = Path(config.KML_DIR)
+    archive_dir = Path(config.ARCHIVE_DIR)
+    cropped_archive = archive_dir / 'cropped'
+    zip_archive = archive_dir / 'zip'
 
     ########### DEBUG ############
     # file_dir = 'testFiles5'
@@ -684,7 +690,7 @@ if __name__ == "__main__":
 
     for url, message_id in zip(packages, ids):
         try:
-            tar_gz_file = download_package(url)
+            tar_gz_file, tar_gz_filename = download_package(url)
             file_dir = extract_files(tar_gz_file)
         except FileNotFoundError:
             file_message(service, message_id)
@@ -692,9 +698,20 @@ if __name__ == "__main__":
 
         meta = get_img_metadata(file_dir.name)
         volc = meta['volc']
+
+        dest_dir_str = Path(f"Orbit {meta['orbit']}-{meta['dir']}") / meta['date'].strftime('%Y%m%d')
+
+        # Archive the zip file
+        zip_dir = zip_archive / dest_dir_str
+        os.makedirs(zip_dir, exist_ok=True)
+        zip_file = zip_dir / tar_gz_filename
+        tar_gz_file.seek(0)
+        with open(zip_file, 'wb') as f:
+            f.write(tar_gz_file.read())
+
         annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
         kmz_file = gen_kmz(clean_file, meta, png_region)
-        kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
+        kml_dir = top_dir / dest_dir_str
         os.makedirs(kml_dir, exist_ok=True)
 
         kmz_dest = kml_dir / kmz_file.name
@@ -702,7 +719,14 @@ if __name__ == "__main__":
             kmz_dest.unlink()
 
         shutil.move(kmz_file, kml_dir)
+
+
         add_annotations(annotated_file, meta)
+
+        # Archive the annotated file
+        crop_dir = cropped_archive / dest_dir_str
+        os.makedirs(crop_dir, exist_ok=True)
+        shutil.copy(annotated_file, crop_dir)
 
         upload_to_mattermost(
             meta['imgName'].replace('.tif', ''), annotated_file, volc, mattermost, channel_id
