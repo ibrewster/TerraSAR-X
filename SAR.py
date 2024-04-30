@@ -6,6 +6,7 @@ import re
 import shutil
 import tempfile
 import tarfile
+import urllib
 import zipfile
 
 import xml.etree.ElementTree as ET
@@ -118,13 +119,14 @@ def search_messages(service, query):
 
 def upload_to_mattermost(meta, image, mattermost, channel_id):
 
-    filename = (
-        f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d')}.png"
-    )
+    filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d %H:%M')}.png"
     volcano = meta['volc']
+    ftp_link = F"ftp://akutan.avo.alaska.edu/TerraSAR-X/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
+    ftp_link = urllib.parse.quote(ftp_link, safe='/:')
 
     matt_message = f"""### {volcano.title()} SAR image available
-**Image Date:** {meta['date'].strftime('%m/%d/%Y')}"""
+**Image Date:** {meta['date'].strftime('%m/%d/%Y')}
+**ZIP Download:** [Click Here to download]({ftp_link})"""
     post_payload = {
         "channel_id": channel_id,
     }
@@ -701,6 +703,7 @@ if __name__ == "__main__":
             continue
 
         meta = get_img_metadata(file_dir.name)
+        meta['tgzName'] = tar_gz_filename
         volc = meta['volc']
 
         dest_dir_str = Path(f"Orbit {meta['orbit']}-{meta['dir']}") / meta['date'].strftime('%Y%m%d')
@@ -731,7 +734,7 @@ if __name__ == "__main__":
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
+        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
