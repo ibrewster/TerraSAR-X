@@ -116,11 +116,15 @@ def search_messages(service, query):
     return messages
 
 
-def upload_to_mattermost(filename, image, volcano, mattermost, channel_id):
+def upload_to_mattermost(meta, image, mattermost, channel_id):
 
-    filename = f"{filename}.png"
+    filename = (
+        f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d')}.png"
+    )
+    volcano = meta['volc']
 
-    matt_message = f"""### {volcano.title()} SAR image available"""
+    matt_message = f"""### {volcano.title()} SAR image available
+**Image Date:** {meta['date'].strftime('%m/%d/%Y')}"""
     post_payload = {
         "channel_id": channel_id,
     }
@@ -720,7 +724,6 @@ if __name__ == "__main__":
 
         shutil.move(kmz_file, kml_dir)
 
-
         add_annotations(annotated_file, meta)
 
         # Archive the annotated file
@@ -728,9 +731,7 @@ if __name__ == "__main__":
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        upload_to_mattermost(
-            meta['imgName'].replace('.tif', ''), annotated_file, volc, mattermost, channel_id
-        )
+        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
