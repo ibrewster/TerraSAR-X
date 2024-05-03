@@ -322,7 +322,11 @@ def gen_clean_png(file_dir):
         tile_dir,
     ]
     
-    img2tiles(tiles_argv, called_from_main=True)
+    try:
+        img2tiles(tiles_argv, called_from_main=True)
+    except TypeError:
+        __spec__ = None
+        img2tiles(tiles_argv)
     
     shutil.copy(img_file, tile_dir)
 
@@ -748,3 +752,4 @@ if __name__ == "__main__":
     ##############################
     
     main()
+
