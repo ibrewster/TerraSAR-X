@@ -34,6 +34,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 from osgeo import gdal, osr, gdalconst
+from osgeo_utils.gdal2tiles import main as img2tiles
 
 # for encoding/decoding messages in base64
 from base64 import urlsafe_b64decode
@@ -153,7 +154,7 @@ def file_message(service, message_id):
     service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute()
 
 
-def get_messages(srvice):
+def get_messages(service):
     print("Retrieving messages")
     messages = search_messages(service, "from:Simon.Plank@dlr.de")
 
@@ -268,9 +269,10 @@ def create_png(file_dir, meta):
 
 def gen_clean_png(file_dir):
     img_file = os.path.join(file_dir, "sar_image.tif")
-    clean_file = os.path.join(file_dir, "sar_image_clean.png")
+    clean_file = os.path.join(file_dir, "sar_image_clean.tiff")
 
     gdal.AllRegister()
+    gdal.UseExceptions()
     ds = gdal.Open(img_file)
 
     transform, utm_zone = get_geoinfo(ds)
@@ -294,35 +296,37 @@ def gen_clean_png(file_dir):
     mem_file_path = "/vsimem/scaled_image.tiff"
     gdal.Translate(mem_file_path, ds, **png_opts)
 
-    # Figure out if we need to drop the resolution
-    max_size = 20000  # Chrome max size (maybe)
-    max_dim = max(ds.RasterXSize, ds.RasterYSize)
-    if max_dim > max_size:
-        reduction_factor = max_dim / max_size
-        new_xres = xres * reduction_factor
-        new_yres = yres * reduction_factor
-
-        resized_path = "/vsimem/resized_image.tiff"
-        gdal.Warp(resized_path, mem_file_path, xRes=new_xres, yRes=new_yres)
-        gdal.Unlink(mem_file_path)
-        mem_file_path = resized_path
-
-
-    dest_srs = "+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180"
-
     kwargs = {
-        "dstSRS": dest_srs,
+        "dstSRS": 'EPSG:3857',
         "multithread": True,
         "warpOptions": ["NUM_THREADS=ALL_CPUS"],
-        "creationOptions": ["worldfile=no"],
+        "creationOptions": ["NUM_THREADS=ALL_CPUS"],
     }
 
     gdal.Warp(clean_file, mem_file_path, **kwargs)
 
     ds = None
     gdal.Unlink(mem_file_path)
+    
+    tile_dir = os.path.join(file_dir, 'mapTiles')
 
-    return clean_file, gmt_region
+    cpu_count = os.cpu_count()
+    tiles_argv = [
+        'SAR.py',
+        '-z',
+        '10-19',
+        '-w',
+        'none',
+        f'--processes={cpu_count}',
+        clean_file,
+        tile_dir,
+    ]
+    
+    img2tiles(tiles_argv, called_from_main=True)
+    
+    shutil.copy(img_file, tile_dir)
+
+    return tile_dir, gmt_region
 
 
 def gen_cropped_png(file_dir, meta):
@@ -668,27 +672,11 @@ def get_img_metadata(file_dir):
 
     return meta
 
-if __name__ == "__main__":
+def main():
     top_dir = Path(config.KML_DIR)
     archive_dir = Path(config.ARCHIVE_DIR)
     cropped_archive = archive_dir / 'cropped'
     zip_archive = archive_dir / 'zip'
-
-    ########### DEBUG ############
-    # file_dir = 'testFiles5'
-    # meta = get_img_metadata(file_dir)
-    # clean_file, png_region = gen_clean_png(file_dir)
-    # kmz_file = gen_kmz(clean_file, meta, png_region)
-    # kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
-    # os.makedirs(kml_dir, exist_ok=True)
-
-    # kmz_dest = kml_dir / kmz_file.name
-    # if kmz_dest.is_file():
-        # kmz_dest.unlink()
-
-    # shutil.move(kmz_file, kml_dir)
-    # exit(0)
-    ##############################
 
     service = gmail_authenticate()
     packages, ids = get_messages(service)
@@ -716,16 +704,18 @@ if __name__ == "__main__":
         with open(zip_file, 'wb') as f:
             f.write(tar_gz_file.read())
 
-        annotated_file, clean_file, png_region = create_png(file_dir.name, meta)
-        kmz_file = gen_kmz(clean_file, meta, png_region)
-        kml_dir = top_dir / dest_dir_str
-        os.makedirs(kml_dir, exist_ok=True)
+        annotated_file, tile_dir, png_region = create_png(file_dir.name, meta)
+    
+        # Place the tile directory in the web directory for serving
+        web_dir = top_dir / dest_dir_str
+        os.makedirs(web_dir, exist_ok=True)
 
-        kmz_dest = kml_dir / kmz_file.name
-        if kmz_dest.is_file():
-            kmz_dest.unlink()
+        tile_dest: Path = web_dir / Path(meta['imgName']).stem
+        
+        if tile_dest.is_dir():
+            tile_dest.unlink()
 
-        shutil.move(kmz_file, kml_dir)
+        shutil.move(tile_dir, tile_dest)
 
         add_annotations(annotated_file, meta)
 
@@ -734,8 +724,27 @@ if __name__ == "__main__":
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
+        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
+
+if __name__ == "__main__":
+    ########### DEBUG ############
+    # file_dir = 'testFiles5'
+    # meta = get_img_metadata(file_dir)
+    # clean_file, png_region = gen_clean_png(file_dir)
+    # kmz_file = gen_kmz(clean_file, meta, png_region)
+    # kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
+    # os.makedirs(kml_dir, exist_ok=True)
+
+    # kmz_dest = kml_dir / kmz_file.name
+    # if kmz_dest.is_file():
+        # kmz_dest.unlink()
+
+    # shutil.move(kmz_file, kml_dir)
+    # exit(0)
+    ##############################
+    
+    main()
