@@ -314,7 +314,7 @@ def gen_clean_png(file_dir):
     tiles_argv = [
         'SAR.py',
         '-z',
-        '10-19',
+        '10-17',
         '-w',
         'none',
         f'--processes={cpu_count}',
