@@ -42,6 +42,8 @@ from base64 import urlsafe_b64decode
 import config
 
 FILEDIR = os.path.dirname(__file__)
+gdal.UseExceptions()
+osr.UseExceptions()
 
 
 @contextmanager
@@ -146,10 +148,13 @@ def upload_to_mattermost(meta, image, mattermost, channel_id):
     mattermost.posts.create_post(post_payload)
 
 
-def file_message(service, message_id):
+def file_message(service, message_id, success=True):
     print(f"Filing message with id: {message_id}")
+    label_id = 'Label_3229944419067452259'
+    if not success:
+        label_id = 'Label_205232427347535884'
     modify_body = {
-        "addLabelIds": ['Label_3229944419067452259'],
+        "addLabelIds": [label_id],
         "removeLabelIds": ['UNREAD', 'INBOX'],
     }
     service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute()
@@ -704,13 +709,14 @@ def main():
             tar_gz_file, tar_gz_filename = download_package(url)
             file_dir = extract_files(tar_gz_file)
         except FileNotFoundError:
-            file_message(service, message_id)
+            file_message(service, message_id, success=False)
             continue
 
         try:
             meta = get_img_metadata(file_dir.name)
         except FileNotFoundError:
             print("Unable to get metadata for message")
+            file_message(service, message_id, success=False)
             continue
 
         meta['tgzName'] = tar_gz_filename
