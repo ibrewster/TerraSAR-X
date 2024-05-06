@@ -43,6 +43,7 @@ import config
 
 FILEDIR = os.path.dirname(__file__)
 
+
 @contextmanager
 def PostgresCursor(
     host='akutan.avo.alaska.edu', database='geodesy', user=None, password=None
@@ -76,7 +77,7 @@ def connect_to_mattermost():
     mattermost.login()
     channel_id = mattermost.channels.get_channel_by_name_and_team_name(
         config.MATTERMOST_TEAM, config.MATTERMOST_CHANNEL
-        )["id"]
+    )["id"]
     return (mattermost, channel_id)
 
 
@@ -174,10 +175,10 @@ def get_messages(service):
                 "body",
                 {
                     "size": 0,
-                    },
-                )["size"]
+                },
+            )["size"]
             > 0
-            ):
+        ):
             body = urlsafe_b64decode(msg["payload"]["parts"][0]["body"]["data"]).decode()
 
         try:
@@ -253,6 +254,7 @@ def get_geoinfo(ds):
 
     return transform, utm_zone
 
+
 def create_png(file_dir, meta):
     print("Processing image")
     gdal.DontUseExceptions()
@@ -266,6 +268,7 @@ def create_png(file_dir, meta):
     cropped_file = gen_cropped_png(file_dir, meta)
 
     return cropped_file, clean_file, gmt_region
+
 
 def gen_clean_png(file_dir):
     img_file = os.path.join(file_dir, "sar_image.tif")
@@ -307,7 +310,7 @@ def gen_clean_png(file_dir):
 
     ds = None
     gdal.Unlink(mem_file_path)
-    
+
     tile_dir = os.path.join(file_dir, 'mapTiles')
 
     cpu_count = os.cpu_count()
@@ -321,13 +324,13 @@ def gen_clean_png(file_dir):
         clean_file,
         tile_dir,
     ]
-    
+
     try:
         img2tiles(tiles_argv, called_from_main=True)
     except TypeError:
         __spec__ = None
         img2tiles(tiles_argv)
-    
+
     shutil.copy(img_file, tile_dir)
 
     return tile_dir, gmt_region
@@ -423,6 +426,7 @@ def gen_cropped_png(file_dir, meta):
 
     return out_file
 
+
 def rotate_dataset(ds, angle, point):
     gt = ds.GetGeoTransform()
 
@@ -441,6 +445,7 @@ def rotate_dataset(ds, angle, point):
     ds.SetGeoTransform(new_gt)
 
     return ds
+
 
 def add_north(png_file, meta, margin):
     script_dir = os.path.dirname(__file__)
@@ -494,7 +499,6 @@ def add_north(png_file, meta, margin):
 
     # and add it to the image
     png_file.paste(north, (margin, margin), north.convert("RGBA"))
-
 
 
 def add_annotations(png_file, meta):
@@ -574,15 +578,15 @@ def add_annotations(png_file, meta):
 
 
 # def sharepoint_upload(file, volcano):
-    # api_url = "https://doimspp.sharepoint.com/sites/GS-VSCAVOall/_api/web"
-    # list_url = f"getfolderbyserverrelativeurl('/sites/GS-VSCAVOall/Shared%20Documents/AVOfileshare/GEOPHYSICS/SAR/{volcano}')/Files"
-    # request_url = f"{api_url}/{list_url}"
+# api_url = "https://doimspp.sharepoint.com/sites/GS-VSCAVOall/_api/web"
+# list_url = f"getfolderbyserverrelativeurl('/sites/GS-VSCAVOall/Shared%20Documents/AVOfileshare/GEOPHYSICS/SAR/{volcano}')/Files"
+# request_url = f"{api_url}/{list_url}"
 
-    # server = sharepy.connect(
-        # "doimspp.sharepoint.com", username=config.shareUSER, password=config.sharePASS
-    # )
-    # resp = server.get(request_url)
-    # print(resp.status_code)
+# server = sharepy.connect(
+# "doimspp.sharepoint.com", username=config.shareUSER, password=config.sharePASS
+# )
+# resp = server.get(request_url)
+# print(resp.status_code)
 
 
 def gen_kmz(file, meta, bounds):
@@ -612,10 +616,12 @@ def gen_kmz(file, meta, bounds):
 
     return kmz_name
 
+
 mission_lookup = {
     'TDX-1': 'TanDEM-X',
     'TSX-1': 'TerraSAR-X',
 }
+
 
 def get_img_metadata(file_dir):
     meta = {}
@@ -673,8 +679,15 @@ def get_img_metadata(file_dir):
         meta['centery'] = db_meta[2]
         meta['size'] = db_meta[3]
         meta['rotation'] = db_meta[4]
+    else:
+        raise FileNotFoundError("Unable to load image parameters")
+        # print("****WARNING: order not found in database. Using fallback parameters")
+        # volc = order_name.split("_")[0]
+        # meta['volc'] = volc
+        # meta['rotation'] = 0
 
     return meta
+
 
 def main():
     top_dir = Path(config.KML_DIR)
@@ -694,11 +707,18 @@ def main():
             file_message(service, message_id)
             continue
 
-        meta = get_img_metadata(file_dir.name)
+        try:
+            meta = get_img_metadata(file_dir.name)
+        except FileNotFoundError:
+            print("Unable to get metadata for message")
+            continue
+
         meta['tgzName'] = tar_gz_filename
         volc = meta['volc']
 
-        dest_dir_str = Path(f"Orbit {meta['orbit']}-{meta['dir']}") / meta['date'].strftime('%Y%m%d')
+        dest_dir_str = Path(f"Orbit {meta['orbit']}-{meta['dir']}") / meta['date'].strftime(
+            '%Y%m%d'
+        )
 
         # Archive the zip file
         zip_dir = zip_archive / dest_dir_str
@@ -709,13 +729,13 @@ def main():
             f.write(tar_gz_file.read())
 
         annotated_file, tile_dir, png_region = create_png(file_dir.name, meta)
-    
+
         # Place the tile directory in the web directory for serving
         web_dir = top_dir / dest_dir_str
         os.makedirs(web_dir, exist_ok=True)
 
         tile_dest: Path = web_dir / Path(meta['imgName']).stem
-        
+
         if tile_dest.is_dir():
             tile_dest.unlink()
 
@@ -734,6 +754,7 @@ def main():
         print("Completed processing imagery for", volc)
     print("All messages processed.")
 
+
 if __name__ == "__main__":
     ########### DEBUG ############
     # file_dir = 'testFiles5'
@@ -745,11 +766,10 @@ if __name__ == "__main__":
 
     # kmz_dest = kml_dir / kmz_file.name
     # if kmz_dest.is_file():
-        # kmz_dest.unlink()
+    # kmz_dest.unlink()
 
     # shutil.move(kmz_file, kml_dir)
     # exit(0)
     ##############################
-    
-    main()
 
+    main()
