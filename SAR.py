@@ -125,7 +125,7 @@ def upload_to_mattermost(meta, image, mattermost, channel_id):
 
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d %H:%M')}.png"
     volcano = meta['volc']
-    ftp_link = F"ftp://akutan.avo.alaska.edu/TerraSAR-X/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
+    ftp_link = F"ftp://akutan.avo.alaska.edu/TerraSAR-X/zip/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
     ftp_link = urllib.parse.quote(ftp_link, safe='/:')
 
     matt_message = f"""### {volcano.title()} SAR image available
@@ -595,46 +595,6 @@ def add_annotations(png_file, meta):
     img.save(png_file)
 
 
-# def sharepoint_upload(file, volcano):
-# api_url = "https://doimspp.sharepoint.com/sites/GS-VSCAVOall/_api/web"
-# list_url = f"getfolderbyserverrelativeurl('/sites/GS-VSCAVOall/Shared%20Documents/AVOfileshare/GEOPHYSICS/SAR/{volcano}')/Files"
-# request_url = f"{api_url}/{list_url}"
-
-# server = sharepy.connect(
-# "doimspp.sharepoint.com", username=config.shareUSER, password=config.sharePASS
-# )
-# resp = server.get(request_url)
-# print(resp.status_code)
-
-
-def gen_kmz(file, meta, bounds):
-    file = Path(file)
-    kml_template = """<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2" xmlns:kml="http://www.opengis.net/kml/2.2" xmlns:atom="http://www.w3.org/2005/Atom">
-<GroundOverlay>
-    <name>{file}</name>
-    <Icon>
-        <href>{file}</href>
-    </Icon>
-    <gx:LatLonQuad>
-        <coordinates>{west},{south} {east},{south} {east},{north} {west},{north}</coordinates>
-    </gx:LatLonQuad>
-</GroundOverlay>
-</kml>"""
-    img_name = meta['imgName']
-    kmz_file = Path(img_name).with_suffix('.kmz')
-    img_name = kmz_file.with_suffix('.png')
-    kmz_name = file.parent / kmz_file
-    west, east, south, north = bounds
-    kml = kml_template.format(file=img_name, west=west, east=east, south=south, north=north)
-    kml = kml.encode('UTF-8')
-    with zipfile.ZipFile(kmz_name, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
-        zipf.write(str(file), img_name)
-        zipf.writestr("doc.kml", kml)
-
-    return kmz_name
-
-
 mission_lookup = {
     'TDX-1': 'TanDEM-X',
     'TSX-1': 'TerraSAR-X',
@@ -779,7 +739,6 @@ if __name__ == "__main__":
     # file_dir = 'testFiles5'
     # meta = get_img_metadata(file_dir)
     # clean_file, png_region = gen_clean_png(file_dir)
-    # kmz_file = gen_kmz(clean_file, meta, png_region)
     # kml_dir = top_dir / f"Orbit {meta['orbit']}-{meta['dir']}" / meta['date'].strftime('%Y%m%d')
     # os.makedirs(kml_dir, exist_ok=True)
 
