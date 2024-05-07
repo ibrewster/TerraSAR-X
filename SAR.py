@@ -354,13 +354,26 @@ def gen_cropped_png(file_dir, meta):
 
     transform, utm_zone = get_geoinfo(ds)
 
-    half_side = meta['size'] / 2
-    proj_cropped_bounds = [
-        meta['centerx'] - half_side,
-        meta['centery'] + half_side,
-        meta['centerx'] + half_side,
-        meta['centery'] - half_side,
-    ]
+    try:
+        half_side = meta['size'] / 2
+    except KeyError:
+        # If we have no size specified, use the entire image
+        gt = ds.GetGeoTransform()
+        x_min = gt[0]
+        y_max = gt[3]
+        x_max = x_min + gt[1] * ds.RasterXSize
+        y_min = y_max + gt[5] * ds.RasterYSize
+
+        meta['size'] = x_max - x_min
+
+        proj_cropped_bounds = [x_min, y_max, x_max, y_min]
+    else:
+        proj_cropped_bounds = [
+            meta['centerx'] - half_side,
+            meta['centery'] + half_side,
+            meta['centerx'] + half_side,
+            meta['centery'] - half_side,
+        ]
 
     minLatC, minLonC, maxLatC, maxLonC = transform.TransformBounds(*proj_cropped_bounds, 21)
     gmt_cropped_region = [minLonC, maxLonC, minLatC, maxLatC]
@@ -685,11 +698,11 @@ def get_img_metadata(file_dir):
         meta['size'] = db_meta[3]
         meta['rotation'] = db_meta[4]
     else:
-        raise FileNotFoundError("Unable to load image parameters")
-        # print("****WARNING: order not found in database. Using fallback parameters")
-        # volc = order_name.split("_")[0]
-        # meta['volc'] = volc
-        # meta['rotation'] = 0
+        # raise FileNotFoundError("Unable to load image parameters")
+        print("****WARNING: order not found in database. Using fallback parameters")
+        volc = order_name.split("_")[0]
+        meta['volc'] = volc
+        meta['rotation'] = 0
 
     return meta
 
@@ -754,7 +767,7 @@ def main():
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
+        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
