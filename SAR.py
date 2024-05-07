@@ -42,8 +42,8 @@ from base64 import urlsafe_b64decode
 import config
 
 FILEDIR = os.path.dirname(__file__)
-gdal.UseExceptions()
 osr.UseExceptions()
+gdal.UseExceptions()
 
 
 @contextmanager
