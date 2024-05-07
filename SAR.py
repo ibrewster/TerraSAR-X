@@ -756,7 +756,7 @@ def main():
         tile_dest: Path = web_dir / Path(meta['imgName']).stem
 
         if tile_dest.is_dir():
-            tile_dest.unlink()
+            shutil.rmtree(str(tile_dest))
 
         shutil.move(tile_dir, tile_dest)
 
