@@ -125,12 +125,16 @@ def upload_to_mattermost(meta, image, mattermost, channel_id):
 
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d %H:%M')}.png"
     volcano = meta['volc']
-    ftp_link = F"ftp://akutan.avo.alaska.edu/TerraSAR-X/zip/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
+    ftp_link = f"ftp://akutan.avo.alaska.edu/TerraSAR-X/zip/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
     ftp_link = urllib.parse.quote(ftp_link, safe='/:')
+    geodesy_link = f"https://apps.avo.alaska.edu/geodesy/map?overlay=Orbit {meta['orbit']}-{meta['dir']}&type=amp&sensor=TerraSAR-X"
+    geodesy_link = urllib.parse.quote(geodesy_link, safe='/:?&=')
 
     matt_message = f"""### {volcano.title()} SAR image available
 **Image Date:** {meta['date'].strftime('%m/%d/%Y')}
-**ZIP Download:** [Click Here to download]({ftp_link})"""
+**ZIP Download:** [Click Here to download]({ftp_link})
+**Web Link:** [View in web interface]({geodesy_link})"""
+    
     post_payload = {
         "channel_id": channel_id,
     }
