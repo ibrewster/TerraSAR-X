@@ -34,6 +34,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 from osgeo import gdal, osr, gdalconst
+
+osr.UseExceptions()  # Must be called immediately to avoid warnings.
+
 from osgeo_utils.gdal2tiles import main as img2tiles
 
 # for encoding/decoding messages in base64
@@ -42,8 +45,6 @@ from base64 import urlsafe_b64decode
 import config
 
 FILEDIR = os.path.dirname(__file__)
-osr.UseExceptions()
-gdal.UseExceptions()
 
 
 @contextmanager
@@ -134,7 +135,7 @@ def upload_to_mattermost(meta, image, mattermost, channel_id):
 **Image Date:** {meta['date'].strftime('%m/%d/%Y')}
 **ZIP Download:** [Click Here to download]({ftp_link})
 **Web Link:** [View in web interface]({geodesy_link})"""
-    
+
     post_payload = {
         "channel_id": channel_id,
     }
@@ -412,31 +413,24 @@ def gen_cropped_png(file_dir, meta):
 
     csl = meta['size'] / 5  # Length of the scale bar in meters, 1/5 the length of the side
 
-    cropped_projection = f"U{utm_zone}/{cropped_inch_width}i"
+    # cropped_projection = f"U{utm_zone}/{cropped_inch_width}i"
+    cropped_projection = f"M{cropped_inch_width}i"
 
     fig = pygmt.Figure()
-    with pygmt.config(
-        PS_PAGE_COLOR="black",
-    ):
 
-        pygmt.makecpt(cmap="gray", series=[0, 300])
-        if meta['zoomed']:            
-            fig.grdimage(
-                cropped_file,
-                projection=cropped_projection,
-                region=gmt_cropped_region,
-                dpi=300,
-                nan_transparent="black",
-            )
-        else:
-            with pygmt.config(FONT_ANNOT_PRIMARY='12p,white', MAP_TICK_PEN_PRIMARY="white"):
-                
-                fig.basemap(
-                    projection=cropped_projection,
-                    region=gmt_cropped_region,
-                    frame=["a+f", "WSen"],
-                )
-            fig.grdimage(cropped_file, dpi=300, nan_transparent="black")
+    frame = ["WSen+gblack"]
+    pygmt.makecpt(cmap="gray", series=[0, 300])
+
+    if not meta['zoomed']:
+        frame.append("a")
+
+    fig.basemap(
+        projection=cropped_projection,
+        region=gmt_cropped_region,
+        frame=frame,
+    )
+
+    fig.grdimage(cropped_file, dpi=300, nan_transparent="black")
 
     with pygmt.config(
         FONT_LABEL="12p,black",
@@ -585,6 +579,12 @@ def add_annotations(png_file, meta):
     cp_left = img_width - cp_width - margin
 
     # Add DLR Logo
+    margin_right = 15
+    if not meta['zoomed']:
+        margin += 50
+        margin_right = 25
+        cp_left -= 10
+
     logo_file = os.path.join(os.path.dirname(__file__), "DLRlogo.png")
     logo = Image.open(logo_file)
     logo_w, logo_h = logo.size
@@ -595,7 +595,8 @@ def add_annotations(png_file, meta):
         cp_top = img_height - cp_height - margin
         logo_top = cp_top
 
-    logo_left = cp_left - logo_w - 15
+    logo_left = cp_left - logo_w - margin_right
+
     img.paste(logo, (logo_left, logo_top), logo.convert("RGBA"))
 
     shadow_left = cp_left + 2
