@@ -420,13 +420,23 @@ def gen_cropped_png(file_dir, meta):
     ):
 
         pygmt.makecpt(cmap="gray", series=[0, 300])
-        fig.grdimage(
-            cropped_file,
-            projection=cropped_projection,
-            region=gmt_cropped_region,
-            dpi=300,
-            nan_transparent="black",
-        )
+        if meta['zoomed']:            
+            fig.grdimage(
+                cropped_file,
+                projection=cropped_projection,
+                region=gmt_cropped_region,
+                dpi=300,
+                nan_transparent="black",
+            )
+        else:
+            with pygmt.config(FONT_ANNOT_PRIMARY='12p,white', MAP_TICK_PEN_PRIMARY="white"):
+                
+                fig.basemap(
+                    projection=cropped_projection,
+                    region=gmt_cropped_region,
+                    frame=["a+f", "WSen"],
+                )
+            fig.grdimage(cropped_file, dpi=300, nan_transparent="black")
 
     with pygmt.config(
         FONT_LABEL="12p,black",
@@ -646,7 +656,8 @@ def get_img_metadata(file_dir):
         targetx,
         targety,
         side,
-        rotation
+        rotation,
+        notes ILIKE '%%zoomed%%' as zoomed
     FROM tsx
     INNER JOIN volcano
     ON volcano.volcano_id=tsx.volcano
@@ -661,12 +672,14 @@ def get_img_metadata(file_dir):
         meta['centery'] = db_meta[2]
         meta['size'] = db_meta[3]
         meta['rotation'] = db_meta[4]
+        meta['zoomed'] = db_meta[5]
     else:
         # raise FileNotFoundError("Unable to load image parameters")
         print("****WARNING: order not found in database. Using fallback parameters")
         volc = order_name.split("_")[0]
         meta['volc'] = volc
         meta['rotation'] = 0
+        meta['zoomed'] = False
 
     return meta
 
@@ -731,9 +744,9 @@ def main():
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
+        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
-        file_message(service, message_id)
+        # file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
 
