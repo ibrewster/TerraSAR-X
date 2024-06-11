@@ -386,32 +386,37 @@ def gen_cropped_png(file_dir, meta):
     if meta['rotation'] != 0:
         ds = rotate_dataset(ds, meta['rotation'], (meta['centerx'], meta['centery']))
 
-    # Crop the image to the desired region (in-memory)
-    gdal.Warp(
-        '/vsimem/cropped.tif',
-        ds,
-        outputBounds=proj_cropped_bounds,
-        multithread=True,
-        warpOptions=['NUM_THREADS=ALL_CPUS'],
-        creationOptions=['NUM_THREADS=ALL_CPUS'],
-    )
-
-    #  Re-project the cropped image to lat/lon so it plays nicely with pygmt
+    # Re-project the image to lat/lon so it plays nicely with pygmt
     gdal.Warp(
         cropped_file,
-        '/vsimem/cropped.tif',
+        ds,
         multithread=True,
         warpOptions=['NUM_THREADS=ALL_CPUS'],
         creationOptions=['NUM_THREADS=ALL_CPUS'],
-        dstSRS="+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +lon_wrap=-180",
+        dstSRS="+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs +over +center_lon=-180",
     )
 
-    gdal.Unlink('/vsimem/cropped.tif')
     ds = None
 
     cropped_inch_width = 6
 
-    csl = meta['size'] / 5  # Length of the scale bar in meters, 1/5 the length of the side
+    scale_length = meta['size'] / 5  # Length of the scale bar in meters, 1/5 the length of the side
+    if scale_length < 1000:
+        scale_length = round(scale_length / 50) * 50
+        scale_unit = "e"
+    else:
+        scale_length = round(scale_length / 1000) * 1000
+        scale_length /= 1000
+        scale_unit = "k"
+
+    # Possible approach: round to either 500 or 1000, depending on which is closest to original value.
+    # If value is closer to 1000, round to the nearest 1000, else round to the nearest 500
+    # nearest_1000 = round(scale_length / 1000) * 1000
+    # nearest_500 = round(scale_length / 500) * 500
+    # if abs(scale_length - nearest_1000) < abs(scale_length - nearest_500):
+    # return nearest_1000
+    # else:
+    # return nearest_500
 
     # cropped_projection = f"U{utm_zone}/{cropped_inch_width}i"
     cropped_projection = f"M{cropped_inch_width}i"
@@ -424,11 +429,10 @@ def gen_cropped_png(file_dir, meta):
     if not meta['zoomed']:
         frame.append("a")
 
-    fig.basemap(
-        projection=cropped_projection,
-        region=gmt_cropped_region,
-        frame=frame,
-    )
+    with pygmt.config(
+        MAP_ANNOT_OBLIQUE="lat_parallel", MAP_FRAME_TYPE="plain", FORMAT_GEO_MAP="ddd.xxF"
+    ):
+        fig.basemap(projection=cropped_projection, region=gmt_cropped_region, frame=frame)
 
     fig.grdimage(cropped_file, dpi=300, nan_transparent="black")
 
@@ -438,7 +442,7 @@ def gen_cropped_png(file_dir, meta):
         MAP_TICK_PEN_PRIMARY="1p,black",
     ):
 
-        fig.basemap(map_scale=f"jLB+w{csl}e+o0.224i/0.2i")
+        fig.basemap(map_scale=f"jLB+w{scale_length}{scale_unit}+o0.224i/0.2i")
 
     with pygmt.config(
         FONT_LABEL="12p,white",
@@ -446,7 +450,7 @@ def gen_cropped_png(file_dir, meta):
         MAP_TICK_PEN_PRIMARY="1p,white",
     ):
 
-        fig.basemap(map_scale=f"jLB+w{csl}e+o0.212i")
+        fig.basemap(map_scale=f"jLB+w{scale_length}{scale_unit}+o0.212i")
 
     fig.savefig(out_file, transparent=False)
 
