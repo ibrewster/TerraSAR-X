@@ -749,9 +749,9 @@ def main():
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        # upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
+        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
 
-        # file_message(service, message_id)
+        file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
 
