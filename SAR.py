@@ -121,9 +121,18 @@ def search_messages(service, query):
             messages.extend(result["messages"])
     return messages
 
+def mm_post_gif(meta, path, mattermost, channel_id, num=4, message=None):
+    gen_date = datetime.today().strftime('%Y%m%d')
+    filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{gen_date}.gif"
+    with tempfile.TemporaryDirectory() as out_dir:
+        gif = os.path.join(out_dir, filename)
+        files = sorted(path.glob('*/*.png'))[: num + 1]
+        images = [Image.open(f) for f in files]
+        images[0].save(gif, save_all=True, append_images=images[1:], duration=1000, loop=0)
+        mm_upload(mattermost, channel_id, message, gif, filename)
+    
 
-def upload_to_mattermost(meta, image, mattermost, channel_id):
-
+def mm_post_image(meta, image, mattermost, channel_id):
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d %H:%M')}.png"
     volcano = meta['volc']
     ftp_link = f"ftp://akutan.avo.alaska.edu/TerraSAR-X/zip/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
@@ -135,20 +144,25 @@ def upload_to_mattermost(meta, image, mattermost, channel_id):
 **Image Date:** {meta['date'].strftime('%m/%d/%Y')}
 **ZIP Download:** [Click Here to download]({ftp_link})
 **Web Link:** [View in web interface]({geodesy_link})"""
+    mm_upload(mattermost, channel_id, matt_message, image, filename)
 
+def mm_upload(mattermost, channel_id, message, image=None, img_name=None):
     post_payload = {
         "channel_id": channel_id,
     }
 
     # First, upload the thumbnail, if any
-    with open(image, "rb") as img:
-        upload_result = mattermost.files.upload_file(
-            channel_id=channel_id, files={"files": (filename, img)}
-        )
+    if image and img_name:
+        with open(image, "rb") as img:
+            upload_result = mattermost.files.upload_file(
+                channel_id=channel_id, files={"files": (img_name, img)}
+            )
 
-    matt_id = upload_result["file_infos"][0]["id"]
-    post_payload["file_ids"] = [matt_id]
-    post_payload["message"] = matt_message
+        matt_id = upload_result["file_infos"][0]["id"]
+        post_payload["file_ids"] = [matt_id]
+
+    if message:
+        post_payload["message"] = message
 
     mattermost.posts.create_post(post_payload)
 
@@ -717,9 +731,8 @@ def main():
         meta['tgzName'] = tar_gz_filename
         volc = meta['volc']
 
-        dest_dir_str = Path(f"Orbit {meta['orbit']}-{meta['dir']}") / meta['date'].strftime(
-            '%Y%m%d'
-        )
+        orbit_dir = Path(f"Orbit {meta['orbit']}-{meta['dir']}")
+        dest_dir_str = orbit_dir / meta['date'].strftime('%Y%m%d')
 
         # Archive the zip file
         zip_dir = zip_archive / dest_dir_str
@@ -749,8 +762,11 @@ def main():
         os.makedirs(crop_dir, exist_ok=True)
         shutil.copy(annotated_file, crop_dir)
 
-        upload_to_mattermost(meta, annotated_file, mattermost, channel_id)
-
+        mm_post_image(meta, annotated_file, mattermost, channel_id)
+        
+        gif_source = cropped_archive / orbit_dir
+        mm_post_gif(meta, gif_source, mattermost, channel_id)
+        
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
