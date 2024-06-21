@@ -126,7 +126,7 @@ def mm_post_gif(meta, path, mattermost, channel_id, num=4, message=None):
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{gen_date}.gif"
     with tempfile.TemporaryDirectory() as out_dir:
         gif = os.path.join(out_dir, filename)
-        files = sorted(path.glob('*/*.png'))[: num + 1]
+        files = sorted(sorted(path.glob('*/*.png'), reverse=True)[:num])
         images = [Image.open(f) for f in files]
         images[0].save(gif, save_all=True, append_images=images[1:], duration=1000, loop=0)
         mm_upload(mattermost, channel_id, message, gif, filename)
