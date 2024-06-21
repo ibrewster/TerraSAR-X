@@ -7,7 +7,6 @@ import shutil
 import tempfile
 import tarfile
 import urllib
-import zipfile
 
 import xml.etree.ElementTree as ET
 
