@@ -136,7 +136,7 @@ def mm_post_image(meta, image, mattermost, channel_id):
     volcano = meta['volc']
     ftp_link = f"ftp://akutan.avo.alaska.edu/TerraSAR-X/zip/Orbit {meta['orbit']}-{meta['dir']}/{meta['date'].strftime('%Y%m%d')}/{meta['tgzName']}"
     ftp_link = urllib.parse.quote(ftp_link, safe='/:')
-    geodesy_link = f"https://apps.avo.alaska.edu/geodesy/map?overlay=Orbit {meta['orbit']}-{meta['dir']}&type=amp&sensor=TerraSAR-X"
+    geodesy_link = f"https://apps.avo.alaska.edu/geodesy/map?overlay=Orbit {meta['orbit']}-{meta['dir']}&type=amp&sensor=TerraSAR-X&dfrom={meta['date'].strftime('%Y-%m-%d')}"
     geodesy_link = urllib.parse.quote(geodesy_link, safe='/:?&=')
 
     matt_message = f"""### {volcano.title()} SAR image available
