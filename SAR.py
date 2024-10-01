@@ -120,6 +120,7 @@ def search_messages(service, query):
             messages.extend(result["messages"])
     return messages
 
+
 def mm_post_gif(meta, path, mattermost, channel_id, num=4, message=None):
     gen_date = datetime.today().strftime('%Y%m%d')
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{gen_date}.gif"
@@ -129,7 +130,7 @@ def mm_post_gif(meta, path, mattermost, channel_id, num=4, message=None):
         images = [Image.open(f) for f in files]
         images[0].save(gif, save_all=True, append_images=images[1:], duration=1000, loop=0)
         mm_upload(mattermost, channel_id, message, gif, filename)
-    
+
 
 def mm_post_image(meta, image, mattermost, channel_id):
     filename = f"{meta['volc']}_orb_{meta['orbit']}_{meta['dir']}_{meta['date'].strftime('%Y%m%d %H:%M')}.png"
@@ -144,6 +145,7 @@ def mm_post_image(meta, image, mattermost, channel_id):
 **ZIP Download:** [Click Here to download]({ftp_link})
 **Web Link:** [View in web interface]({geodesy_link})"""
     mm_upload(mattermost, channel_id, matt_message, image, filename)
+
 
 def mm_upload(mattermost, channel_id, message, image=None, img_name=None):
     post_payload = {
@@ -182,7 +184,7 @@ def get_messages(service):
     print("Retrieving messages")
     messages = search_messages(service, "from:Simon.Plank@dlr.de")
 
-    url_pattern = re.compile("\n\s+(ftps:\/\/.+.tar.gz)")
+    url_pattern = re.compile(r"\n\s+(ftps:\/\/.+.tar.gz)")
     packages = []
     ids = []
     print(f"{len(messages)} messages found")
@@ -218,7 +220,7 @@ def get_messages(service):
 
 def download_package(url):
     print("Downloading file:", url)
-    url_breakdown = re.search("ftps:\/\/([^@]+)@([^\/]+)\/+([^\s]+.tar.gz)", url)
+    url_breakdown = re.search(r"ftps:\/\/([^@]+)@([^\/]+)\/+([^\s]+.tar.gz)", url)
     user = url_breakdown.group(1)
     server = url_breakdown.group(2)
     filename = url_breakdown.group(3)
@@ -241,8 +243,8 @@ def download_package(url):
 def extract_files(file):
     print("Extracting downloaded file")
     tempdir = tempfile.TemporaryDirectory()
-    img_pattern = re.compile("IMAGEDATA\/[^\s]+.tif")
-    xml_pattern = re.compile("SAR.L1B\/[^\s\/]+\/[^\s\/]+.xml")
+    img_pattern = re.compile(r"IMAGEDATA\/[^\s]+.tif")
+    xml_pattern = re.compile(r"SAR.L1B\/[^\s\/]+\/[^\s\/]+.xml")
     with tarfile.open(fileobj=file, mode="r") as tf, tempfile.TemporaryDirectory() as td:
         files = tf.getnames()
         tf.extractall(td)
@@ -658,7 +660,7 @@ def get_img_metadata(file_dir):
 
     order_name = order_name.replace(customer_num, '')
 
-    order_date = re.search("\d{8}", order_name).group(0)
+    order_date = re.search(r"\d{8}", order_name).group(0)
     order_search = order_name.replace(order_date, 'YYYYMMDD')
 
     scene_date = root.find('productInfo/sceneInfo/start/timeUTC').text
@@ -762,10 +764,10 @@ def main():
         shutil.copy(annotated_file, crop_dir)
 
         mm_post_image(meta, annotated_file, mattermost, channel_id)
-        
+
         gif_source = cropped_archive / orbit_dir
         mm_post_gif(meta, gif_source, mattermost, channel_id)
-        
+
         file_message(service, message_id)
         print("Completed processing imagery for", volc)
     print("All messages processed.")
