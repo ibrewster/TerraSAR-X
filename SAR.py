@@ -725,7 +725,7 @@ def get_img_metadata(file_dir):
     ON volcano.volcano_id=tsx.volcano
     WHERE ordername=%s;"""
 
-    alt_meta_sql = """SELECT
+    alt_meta_sql = r"""SELECT
         volcano_name,
         targetx,
         targety,
