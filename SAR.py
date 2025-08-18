@@ -16,7 +16,13 @@ from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 
-import cairosvg
+try:
+    import cairosvg
+except OSError:
+    # Fix for MacOS/homebrew
+    os.environ['DYLD_LIBRARY_PATH'] = '/opt/homebrew/lib'
+    import cairosvg
+
 import mattermostdriver
 import psycopg
 import pygmt
@@ -65,6 +71,15 @@ def PostgresCursor(
         conn.close()
     except Exception:
         pass
+
+
+def get_avo_volcs():
+    QUERY = "SELECT volcano_name FROM volcano WHERE observatory='avo'"
+    with PostgresCursor() as cursor:
+        cursor.execute(QUERY)
+        volcs = cursor.fetchall()
+
+    return {x[0].lower().replace(' ', '') for x in volcs}
 
 
 def connect_to_mattermost():
@@ -182,9 +197,11 @@ def file_message(service, message_id, success=True):
 
 def get_messages(service):
     print("Retrieving messages")
-    messages = search_messages(service, "from:Simon.Plank@dlr.de")
+    avo_volcs = get_avo_volcs()
+    messages = search_messages(service, "from:Simon.Plank@dlr.de OR from:NRSDL-Operations@dlr.de")
 
     url_pattern = re.compile(r"\n\s+(ftps:\/\/.+.tar.gz)")
+    volcano_pattern = re.compile(r"Name\s*=\s*([^\s]+)")
     packages = []
     ids = []
     print(f"{len(messages)} messages found")
@@ -208,9 +225,21 @@ def get_messages(service):
 
         try:
             download_url = url_pattern.search(body).group(1)
+            name = volcano_pattern.search(body).group(1)
         except AttributeError:
             print("Unable to parse URL from body. Skipping")
             continue
+
+        # Just see if the name of one of our volcanoes is in the order name *somewhere*
+        normalized_name = re.sub(r"[\s_]+", "", name).lower()
+        our_volc = [v for v in avo_volcs if v in normalized_name]
+        if not our_volc:
+            print(
+                f"Order appears to be for {name}, which does not appear to be an AVO volc. Skipping."
+            )
+            file_message(service, message_id, False)
+            continue
+
 
         packages.append(download_url)
         ids.append(message_id)
@@ -226,7 +255,7 @@ def download_package(url):
     filename = url_breakdown.group(3)
 
     filedata = BytesIO()
-    ftps_server = ftplib.FTP_TLS(server, user, config.FTP_PASSWORD)
+    ftps_server = ftplib.FTP_TLS(server, user, config.FTP_PASSWORD.get(user))
     ftps_server.prot_p()
     try:
         ftps_server.retrbinary(f"RETR {filename}", filedata.write)
@@ -242,27 +271,32 @@ def download_package(url):
 
 def extract_files(file):
     print("Extracting downloaded file")
-    tempdir = tempfile.TemporaryDirectory()
-    img_pattern = re.compile(r"IMAGEDATA\/[^\s]+.tif")
-    xml_pattern = re.compile(r"SAR.L1B\/[^\s\/]+\/[^\s\/]+.xml")
+    temp_dirs = []
+    # tempdir = tempfile.TemporaryDirectory()
+    img_pattern = re.compile(r"SAR\.L1B\/([^\/]+)\/IMAGEDATA\/[^\s]+\.tif")
+    xml_pattern = re.compile(r"SAR\.L1B\/([^\/]+)\/[^\s\/]+\.xml")
     with tarfile.open(fileobj=file, mode="r") as tf, tempfile.TemporaryDirectory() as td:
         files = tf.getnames()
         tf.extractall(td)
 
-        try:
-            img_file = next((x for x in files if img_pattern.search(x)))
-        except StopIteration:
+        img_files = [x for x in files if img_pattern.search(x)]
+        xml_files = [x for x in files if xml_pattern.search(x)]
+        if not img_files:
             print("Image file not found in archive")
             raise FileNotFoundError("No Image file found")
-        xml_file = next((x for x in files if xml_pattern.search(x)))
+        for img_file in img_files:
+            img_identifier = img_pattern.search(img_file).group(1)
+            xml_file = next((x for x in xml_files if img_identifier in x), None)
 
-        img_path = os.path.join(td, img_file)
-        xml_path = os.path.join(td, xml_file)
+            img_path = os.path.join(td, img_file)
+            xml_path = os.path.join(td, xml_file)
 
-        shutil.move(img_path, os.path.join(tempdir.name, "sar_image.tif"))
-        shutil.move(xml_path, os.path.join(tempdir.name, "metadata.xml"))
+            tempdir = tempfile.TemporaryDirectory()
+            shutil.move(img_path, os.path.join(tempdir.name, "sar_image.tif"))
+            shutil.move(xml_path, os.path.join(tempdir.name, "metadata.xml"))
+            temp_dirs.append(tempdir)
 
-    return tempdir
+    return temp_dirs
 
 
 def get_geoinfo(ds):
@@ -654,13 +688,21 @@ def get_img_metadata(file_dir):
     meta['dir'] = "ASC" if direction == "ASCENDING" else "DESC"
     order_name = root.find('setup/orderInfo/userData/customerOrderName').text
     order_id = root.find('setup/orderInfo/userData/customerOrderID').text
-    customer_num = os.path.commonprefix(
-        [order_name, order_id]
-    )  # this could probably be hardcoded, but I'm paranoid.
 
-    order_name = order_name.replace(customer_num, '')
+    if order_id.startswith('mpoland'):
+        name_parts = order_name.split('_')
+        order_date = name_parts[-1]
+        volc = name_parts[0]
+        normalized_order_volc = volc.lower()
+    else:
+        customer_num = os.path.commonprefix(
+            [order_name, order_id]
+        )  # this could probably be hardcoded, but I'm paranoid.
 
-    order_date = re.search(r"\d{8}", order_name).group(0)
+        order_name = order_name.replace(customer_num, '')
+        order_date = re.search(r"\d{8}|\d{4}[A-Za-z]{3}\d{2}", order_name).group(0)
+        normalized_order_volc =  re.sub(r"[\s_]+", "", order_name.replace(order_date, '')).removesuffix('_A').lower()
+
     order_search = order_name.replace(order_date, 'YYYYMMDD')
 
     scene_date = root.find('productInfo/sceneInfo/start/timeUTC').text
@@ -682,9 +724,28 @@ def get_img_metadata(file_dir):
     INNER JOIN volcano
     ON volcano.volcano_id=tsx.volcano
     WHERE ordername=%s;"""
+
+    alt_meta_sql = """SELECT
+        volcano_name,
+        targetx,
+        targety,
+        side,
+        rotation,
+        notes ILIKE '%%zoomed%%' as zoomed
+    FROM tsx
+    INNER JOIN volcano
+    ON volcano.volcano_id=tsx.volcano
+    WHERE LOWER(REGEXP_REPLACE(volcano.volcano_name, '[\s_]+', '', 'g')) = %s
+    AND orbit=%s AND ascending=%s"""
     with PostgresCursor() as cursor:
+        # Try first just using the order name
         cursor.execute(meta_sql, (order_search,))
         db_meta = cursor.fetchone()
+        if db_meta is None:
+            # if that fails, try using the orbit, direction, and volc name
+            print("Standard query failed. Trying generic parameters")
+            cursor.execute(alt_meta_sql, (normalized_order_volc, orbit, direction == 'ASCENDING'))
+            db_meta = cursor.fetchone()
 
     if db_meta is not None:
         meta['volc'] = db_meta[0]
@@ -717,59 +778,60 @@ def main():
     for url, message_id in zip(packages, ids):
         try:
             tar_gz_file, tar_gz_filename = download_package(url)
-            file_dir = extract_files(tar_gz_file)
+            file_dirs = extract_files(tar_gz_file)
         except FileNotFoundError:
             file_message(service, message_id, success=False)
             continue
 
-        try:
-            meta = get_img_metadata(file_dir.name)
-        except FileNotFoundError:
-            print("Unable to get metadata for message")
-            file_message(service, message_id, success=False)
-            continue
+        for file_dir in file_dirs:
+            try:
+                meta = get_img_metadata(file_dir.name)
+            except FileNotFoundError:
+                print("Unable to get metadata for message")
+                file_message(service, message_id, success=False)
+                continue
 
-        meta['tgzName'] = tar_gz_filename
-        volc = meta['volc']
+            meta['tgzName'] = tar_gz_filename
+            volc = meta['volc']
 
-        orbit_dir = Path(f"Orbit {meta['orbit']}-{meta['dir']}")
-        dest_dir_str = orbit_dir / meta['date'].strftime('%Y%m%d')
+            orbit_dir = Path(f"Orbit {meta['orbit']}-{meta['dir']}")
+            dest_dir_str = orbit_dir / meta['date'].strftime('%Y%m%d')
 
-        # Archive the zip file
-        zip_dir = zip_archive / dest_dir_str
-        os.makedirs(zip_dir, exist_ok=True)
-        zip_file = zip_dir / tar_gz_filename
-        tar_gz_file.seek(0)
-        with open(zip_file, 'wb') as f:
-            f.write(tar_gz_file.read())
+            # Archive the zip file
+            zip_dir = zip_archive / dest_dir_str
+            os.makedirs(zip_dir, exist_ok=True)
+            zip_file = zip_dir / tar_gz_filename
+            tar_gz_file.seek(0)
+            with open(zip_file, 'wb') as f:
+                f.write(tar_gz_file.read())
 
-        annotated_file, tile_dir, png_region = create_png(file_dir.name, meta)
+            annotated_file, tile_dir, png_region = create_png(file_dir.name, meta)
 
-        # Place the tile directory in the web directory for serving
-        web_dir = top_dir / dest_dir_str
-        os.makedirs(web_dir, exist_ok=True)
+            # Place the tile directory in the web directory for serving
+            web_dir = top_dir / dest_dir_str
+            os.makedirs(web_dir, exist_ok=True)
 
-        tile_dest: Path = web_dir / Path(meta['imgName']).stem
+            tile_dest: Path = web_dir / Path(meta['imgName']).stem
 
-        if tile_dest.is_dir():
-            shutil.rmtree(str(tile_dest))
+            if tile_dest.is_dir():
+                shutil.rmtree(str(tile_dest))
 
-        shutil.move(tile_dir, tile_dest)
+            shutil.move(tile_dir, tile_dest)
 
-        add_annotations(annotated_file, meta)
+            add_annotations(annotated_file, meta)
 
-        # Archive the annotated file
-        crop_dir = cropped_archive / dest_dir_str
-        os.makedirs(crop_dir, exist_ok=True)
-        shutil.copy(annotated_file, crop_dir)
+            # Archive the annotated file
+            crop_dir = cropped_archive / dest_dir_str
+            os.makedirs(crop_dir, exist_ok=True)
+            shutil.copy(annotated_file, crop_dir)
 
-        mm_post_image(meta, annotated_file, mattermost, channel_id)
+            mm_post_image(meta, annotated_file, mattermost, channel_id)
 
-        gif_source = cropped_archive / orbit_dir
-        mm_post_gif(meta, gif_source, mattermost, channel_id)
+            gif_source = cropped_archive / orbit_dir
+            mm_post_gif(meta, gif_source, mattermost, channel_id)
 
-        file_message(service, message_id)
-        print("Completed processing imagery for", volc)
+            file_message(service, message_id)
+            print("Completed processing imagery for", volc)
     print("All messages processed.")
 
 
