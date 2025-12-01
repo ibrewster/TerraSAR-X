@@ -226,10 +226,17 @@ def get_messages(service):
         try:
             slim_body = re.sub(r'(ftps://[^\r\n]+)\r\n([^\s\r\n]+)', r'\1\2', body)
             download_urls = url_pattern.findall(slim_body)
-            name = volcano_pattern.search(body).group(1)
         except AttributeError:
             print("Unable to parse URL from body. Skipping")
             continue
+
+        try:
+            name = volcano_pattern.search(body).group(1)
+        except AttributeError:
+            # Try the header
+            headers = msg['payload']['headers']
+            subject = next((header['value'] for header in headers if header['name'].lower() == 'subject'), None)
+            name = subject.split(",")[-1]
 
         # Just see if the name of one of our volcanoes is in the order name *somewhere*
         normalized_name = re.sub(r"[\s_]+", "", name).lower()
