@@ -200,7 +200,7 @@ def get_messages(service):
     avo_volcs = get_avo_volcs()
     messages = search_messages(service, "from:Simon.Plank@dlr.de OR from:NRSDL-Operations@dlr.de")
 
-    url_pattern = re.compile(r"\n\s+(ftps:\/\/.+.tar.gz)")
+    url_pattern = re.compile(r"(ftps:\/\/.+.tar.gz)")
     volcano_pattern = re.compile(r"Name\s*=\s*([^\s]+)")
     packages = []
     ids = []
@@ -224,7 +224,8 @@ def get_messages(service):
             body = urlsafe_b64decode(msg["payload"]["parts"][0]["body"]["data"]).decode()
 
         try:
-            download_url = url_pattern.search(body).group(1)
+            slim_body = re.sub(r'(ftps://[^\r\n]+)\r\n([^\s\r\n]+)', r'\1\2', body)
+            download_urls = url_pattern.findall(slim_body)
             name = volcano_pattern.search(body).group(1)
         except AttributeError:
             print("Unable to parse URL from body. Skipping")
@@ -241,8 +242,8 @@ def get_messages(service):
             continue
 
 
-        packages.append(download_url)
-        ids.append(message_id)
+        packages.extend(download_urls)
+        ids.extend([message_id]*len(download_urls))
 
     return (packages, ids)
 
@@ -700,7 +701,10 @@ def get_img_metadata(file_dir):
         )  # this could probably be hardcoded, but I'm paranoid.
 
         order_name = order_name.replace(customer_num, '')
-        order_date = re.search(r"\d{8}|\d{4}[A-Za-z]{3}\d{2}", order_name).group(0)
+        try:
+            order_date = re.search(r"\d{8}|\d{4}[A-Za-z]{3}\d{2}", order_name).group(0)
+        except:
+            order_date = '_missed'
         normalized_order_volc =  re.sub(r"[\s_]+", "", order_name.replace(order_date, '')).removesuffix('_A').lower()
 
     order_search = order_name.replace(order_date, 'YYYYMMDD')
